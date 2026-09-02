@@ -198,3 +198,83 @@ def match_numeric_range(value: float, options: Sequence[str]) -> tuple[str | Non
     if best:
         return best[0], "nearest-not-over"
     return None, "no-match"
+
+
+# Every ATS words "I'd rather not say" differently. A profile that says
+# "I do not wish to answer" must still find "Decline To Self Identify",
+# otherwise a voluntary EEO field is left blank and the form fails validation.
+_DECLINE_PHRASES = (
+    "decline to self identify", "decline to self-identify", "decline",
+    "i do not wish to answer", "i don't wish to answer", "i dont wish to answer",
+    "prefer not to say", "prefer not to answer", "i prefer not to say",
+    "choose not to disclose", "do not wish to disclose", "not disclosed",
+    "i do not want to answer", "wish not to answer", "no answer",
+    "prefer not to disclose", "opt out", "unspecified",
+)
+
+
+def is_decline(value: object) -> bool:
+    """True only for a genuine 'prefer not to say'.
+
+    Matching is word-boundary aware and requires a real phrase. A naive
+    substring test matches "No" inside "I do NOt wish to answer", which would
+    answer an EEO question "No" when the candidate asked to decline -- a false
+    statement on a form, not a formatting slip.
+    """
+    n = normalize(str(value))
+    if not n or len(n) < 6:            # "no", "yes" are never a decline
+        return False
+    words = n.split()
+    for phrase in _DECLINE_PHRASES:
+        pn = normalize(phrase)
+        if not pn:
+            continue
+        if n == pn:
+            return True
+        pw = pn.split()
+        # phrase must appear as a contiguous run of whole words
+        if len(pw) > 1 and len(words) >= len(pw):
+            for i in range(len(words) - len(pw) + 1):
+                if words[i:i + len(pw)] == pw:
+                    return True
+        elif len(pw) == 1 and len(pw[0]) > 5 and pw[0] in words:
+            return True
+    return False
+
+
+def match_decline(options: Sequence[str]) -> str | None:
+    """Find whichever wording this form uses for 'prefer not to say'."""
+    for o in options:
+        if is_decline(o):
+            return o
+    return None
+
+
+_AFFIRM = ("yes", "y", "true", "i agree", "agree", "accept", "i accept",
+           "i understand", "acknowledge", "i acknowledge", "confirm", "1")
+
+
+def is_affirmative(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    n = normalize(str(value))
+    return n in {normalize(a) for a in _AFFIRM}
+
+
+def match_acknowledgement(value: object, options: Sequence[str]) -> str | None:
+    """Handle consent controls whose only choice is the affirmative statement.
+
+    Arbitration and policy acknowledgements are often a single-option select
+    reading "I understand and agree to the terms...". There is no "Yes" to
+    match. Selecting it is exactly what a confirmed affirmative in the profile
+    authorizes -- and note this returns None for anything that is not an
+    explicit affirmative, so a blank or a "No" never silently agrees.
+    """
+    if len(options) != 1 or not is_affirmative(value):
+        return None
+    only = options[0]
+    n = normalize(only)
+    if any(k in n for k in ("agree", "understand", "acknowledge", "read",
+                            "accept", "confirm", "consent")):
+        return only
+    return None

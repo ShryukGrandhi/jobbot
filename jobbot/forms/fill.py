@@ -29,6 +29,7 @@ validation error at submit, after the resume and the project already exist.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 import re
 from pathlib import Path
@@ -36,7 +37,10 @@ from typing import Any
 
 import structlog
 
-from jobbot.forms.matching import match_boolean, match_numeric_range, match_option
+from jobbot.forms.matching import (
+    is_decline, match_acknowledgement, match_boolean, match_decline,
+    match_numeric_range, match_option,
+)
 from jobbot.forms.model import FieldKind, FormField, ProposedAnswer
 
 log = structlog.get_logger(__name__)
@@ -124,7 +128,13 @@ async def fill_text(page: Any, field: FormField, value: str, *, sequential: bool
 async def fill_select(page: Any, field: FormField, value: str) -> bool:
     """Native <select>. Snap to a real option; never inject free text."""
     opts = field.option_labels()
-    chosen, score, how = match_option(str(value), opts)
+    ack = match_acknowledgement(value, opts)
+    if ack is not None:
+        chosen, score, how = ack, 1.0, "acknowledgement"
+    elif is_decline(str(value)) and match_decline(opts):
+        chosen, score, how = match_decline(opts), 1.0, "decline-synonym"
+    else:
+        chosen, score, how = match_option(str(value), opts)
     if chosen is None:
         log.warning("fill.select_no_match", label=field.label[:50],
                     wanted=str(value)[:40], score=score)
@@ -143,55 +153,167 @@ async def fill_select(page: Any, field: FormField, value: str) -> bool:
     return True
 
 
-async def fill_combobox(page: Any, field: FormField, value: str) -> bool:
-    """Custom listbox widget: click the trigger, type, pick from the popup.
+_VISIBLE_OPTIONS_JS = r"""
+() => Array.from(document.querySelectorAll(
+        '[role="option"], .select__option, li[id*="option"]'))
+  .filter(o => { const r = o.getBoundingClientRect();
+                 return r.width > 0 && r.height > 0; })
+  .map(o => (o.innerText || '').trim())
+  .filter(Boolean)
+"""
 
-    Re-queries the option list after typing because react-select discards and
-    rebuilds its nodes on each keystroke.
+_CLICK_OPTION_JS = r"""
+(wanted) => {
+  const nodes = Array.from(document.querySelectorAll(
+      '[role="option"], .select__option, li[id*="option"]'))
+    .filter(o => { const r = o.getBoundingClientRect();
+                   return r.width > 0 && r.height > 0; });
+  for (const o of nodes) {
+    if ((o.innerText || '').trim() === wanted) {
+      o.scrollIntoView({block: 'nearest'});
+      o.click();
+      return true;
+    }
+  }
+  return false;
+}
+"""
+
+_CONTROL_TEXT_JS = r"""
+(sel) => {
+  const e = document.querySelector(sel);
+  if (!e) return '';
+  // closest() matches the element itself, and the input carries a
+  // "select__input" class -- so asking for the nearest [class*=select]
+  // returns the input, whose innerText is always empty. Walk to the actual
+  // control wrapper instead and read the rendered value.
+  let c = e.parentElement;
+  while (c && !/select__control|select__value-container/.test(c.className || '')) {
+    c = c.parentElement;
+    if (c === document.body) { c = null; break; }
+  }
+  if (!c) c = e.closest('.field, fieldset') || e.parentElement;
+  const single = c && c.querySelector('.select__single-value, [class*="singleValue"]');
+  if (single) return (single.innerText || '').trim().slice(0, 120);
+  return c ? (c.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 120) : '';
+}
+"""
+
+
+async def _close_open_menus(page: Any, tries: int = 3) -> None:
+    """Dismiss any open listbox so option discovery starts from a clean slate."""
+    for _ in range(tries):
+        if not await _visible_options(page):
+            return
+        with contextlib.suppress(Exception):
+            await page.keyboard.press("Escape")
+        await asyncio.sleep(0.2)
+    with contextlib.suppress(Exception):
+        await page.mouse.click(4, 4)     # click away as a last resort
+        await asyncio.sleep(0.25)
+
+
+async def _visible_options(page: Any) -> list[str]:
+    try:
+        return await page.evaluate(_VISIBLE_OPTIONS_JS) or []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+async def fill_combobox(page: Any, field: FormField, value: str) -> bool:
+    """Custom listbox widget: open it, then choose from the menu IT opened.
+
+    Option discovery is done by difference. A page routinely has more than one
+    menu mounted -- a phone-country picker is the usual offender -- and
+    react-select portals its menu to <body>, so neither "everything matching
+    [role=option]" nor "options inside the control's container" identifies the
+    right list. Snapshot the visible options before the click, snapshot after,
+    and the newly-appeared ones belong to this control.
+
+    Without this, a relocation question gets answered from the country list.
     """
     loc = await _locate(page, field)
     await loc.scroll_into_view_if_needed()
     await _human_pause()
+
+    # Close anything already open before measuring. Consecutive yes/no fields
+    # offer identical option text, so a menu left open from the previous field
+    # makes the before/after diff come out empty and the fill silently no-ops.
+    await _close_open_menus(page)
+
+    before = set(await _visible_options(page))
     await loc.click()
-    await asyncio.sleep(0.25)
+    await asyncio.sleep(0.45)
+    after = await _visible_options(page)
+    opts = [o for o in after if o not in before]
 
     text = str(value)
-    try:
-        await loc.press_sequentially(text[:40], delay=random.randint(35, 80))
-    except Exception:
-        try:
-            await loc.fill(text[:40])
-        except Exception:
-            pass
-    await asyncio.sleep(0.45)
-
-    # Re-query every time: the previous nodes are gone.
-    for sel in ("[role='option']", "li[role='option']", ".select__option",
-                "[class*='option']:not([class*='options'])"):
-        opts = page.locator(sel)
-        n = await opts.count()
-        if not n:
-            continue
-        labels = []
-        for i in range(min(n, 40)):
-            try:
-                labels.append((i, (await opts.nth(i).inner_text()).strip()))
-            except Exception:
-                continue
-        if not labels:
-            continue
-        chosen, score, how = match_option(text, [l for _, l in labels])
+    chosen, score, how = (None, 0.0, "no-options")
+    if opts:
+        # A single-option consent control has no "Yes" to match.
+        ack = match_acknowledgement(value, opts)
+        if ack is not None:
+            chosen, score, how = ack, 1.0, "acknowledgement"
+        elif is_decline(text):
+            d = match_decline(opts)
+            if d is not None:
+                chosen, score, how = d, 1.0, "decline-synonym"
         if chosen is None:
-            continue
-        idx = next(i for i, l in labels if l == chosen)
-        await opts.nth(idx).click()
-        await asyncio.sleep(0.2)
-        log.debug("fill.combobox", label=field.label[:40], chose=chosen, via=how)
-        return True
+            chosen, score, how = match_option(text, opts)
 
-    log.warning("fill.combobox_no_option", label=field.label[:50], wanted=text[:40])
-    await page.keyboard.press("Escape")
-    return False
+    # Typing narrows a long list. Only if the opened menu did not already offer
+    # what we want -- typing into a prefix-filtered widget can empty it.
+    if chosen is None:
+        with contextlib.suppress(Exception):
+            await loc.press_sequentially(text[:32], delay=random.randint(35, 75))
+            await asyncio.sleep(0.55)
+        after = await _visible_options(page)
+        opts = [o for o in after if o not in before] or after
+        if opts:
+            ack = match_acknowledgement(value, opts)
+            if ack is not None:
+                chosen, score, how = ack, 1.0, "acknowledgement"
+            elif is_decline(text) and match_decline(opts):
+                chosen, score, how = match_decline(opts), 1.0, "decline-synonym"
+            else:
+                chosen, score, how = match_option(text, opts)
+
+    if chosen is None:
+        log.warning("fill.combobox_no_option", label=field.label[:50],
+                    wanted=text[:40], seen=opts[:6])
+        with contextlib.suppress(Exception):
+            await page.keyboard.press("Escape")
+        return False
+
+    clicked = False
+    with contextlib.suppress(Exception):
+        clicked = bool(await page.evaluate(_CLICK_OPTION_JS, chosen))
+    if not clicked:
+        with contextlib.suppress(Exception):
+            await page.get_by_role("option", name=chosen, exact=True).first.click(timeout=3000)
+            clicked = True
+    if not clicked:
+        log.warning("fill.combobox_click_failed", label=field.label[:50], chose=chosen)
+        return False
+
+    await asyncio.sleep(0.35)
+
+    # Confirm it stuck. A combobox that silently reverts is worse than one that
+    # fails outright, because the form then looks complete.
+    stuck = True
+    with contextlib.suppress(Exception):
+        got = ((await loc.input_value()) or "").strip()
+        if not got and field.selector:
+            shown = await page.evaluate(_CONTROL_TEXT_JS, field.selector)
+            stuck = chosen.lower() in (shown or "").lower()
+            if not stuck:
+                log.warning("fill.combobox_did_not_stick", label=field.label[:50],
+                            chose=chosen, shows=(shown or "")[:60])
+    if not stuck:
+        return False
+
+    log.debug("fill.combobox", label=field.label[:40], chose=chosen, via=how)
+    return True
 
 
 async def fill_radio(page: Any, field: FormField, value: Any) -> bool:

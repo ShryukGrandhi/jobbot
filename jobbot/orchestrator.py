@@ -88,8 +88,7 @@ class ApplicationResult:
     lessons: list[dict[str, str]] = field(default_factory=list)
 
 
-# Role tiers, lowest number = applied to first. Ordering, not exclusion: a
-# strong full-time match is still reached once the earlier tiers run out.
+# Role tiers, lowest number = applied to first. Ordering, not exclusion.
 # Senior and staff postings sort last because a "6+ years" line is a knockout
 # for an early-career candidate, not a stretch goal.
 TIER_INTERN, TIER_NEWGRAD, TIER_FULLTIME, TIER_SENIOR = 0, 1, 2, 3

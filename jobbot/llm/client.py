@@ -2,11 +2,9 @@
 
 Two interchangeable backends:
 
+  meridian  -- local proxy (127.0.0.1:3456) bridging the Claude Agent SDK to the
+               Anthropic wire format, billed against a Claude Max subscription.
   anthropic -- api.anthropic.com directly, billed per token via an API key.
-               This is the default and the supported path.
-  meridian  -- a local proxy bridging a Claude subscription to the Anthropic
-               wire format. It works, but Anthropic's Agent SDK docs direct
-               third-party tools to API-key auth, so the account risk is yours.
 
 Both speak the Anthropic Messages API, so the only difference is base_url/api_key.
 Set JOBBOT_LLM_PROVIDER to switch.

@@ -199,7 +199,6 @@ def send(n: Notification, *, to: str | None = None, dry_run: bool = False) -> st
     body = n.text()
     if not to:
         _via_log("(unset)", body)
-        log.info("notify.no_recipient", hint="set JOBBOT_NOTIFY_TO to receive messages")
         return "log(no-recipient)"
 
     if dry_run:

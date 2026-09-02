@@ -68,10 +68,6 @@ def cmd_check(args) -> int:
     ok = True
     print("profile:")
     try:
-        if not Path(args.profile).exists():
-            raise FileNotFoundError(
-                f"{args.profile} not found. Run: "
-                "cp config/profile.example.yaml config/profile.yaml")
         profile = Profile.load(args.profile)
         print(f"  loaded {profile.identity.full_name} <{profile.identity.email}>")
         print(f"  {len(profile.experience)} roles, {profile.total_years_experience}y total")
@@ -202,20 +198,6 @@ def cmd_ats_test(args) -> int:
     return 0
 
 
-def cmd_report(args) -> int:
-    """Print every answer entered for one application."""
-    from jobbot.report import report
-    d = Path(args.audit_dir)
-    if not d.exists():
-        print(f"no such audit directory: {d}", file=sys.stderr)
-        print("\nAvailable:", file=sys.stderr)
-        for x in sorted(Path("data/applications").glob("*")):
-            print(f"  {x}", file=sys.stderr)
-        return 1
-    print(report(d))
-    return 0
-
-
 def cmd_stats(args) -> int:
     t = Tracker(args.csv)
     s = t.stats()
@@ -258,10 +240,6 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--pdf", required=True)
     a.add_argument("--lever-url", help="a jobs.lever.co/<co>/<id>/apply URL for a live parse test")
     a.set_defaults(func=cmd_ats_test)
-
-    rp = sub.add_parser("report", help="print every answer entered for one application")
-    rp.add_argument("audit_dir", help="e.g. data/applications/greenhouse_12345")
-    rp.set_defaults(func=cmd_report)
 
     s = sub.add_parser("stats", help="summarize the tracker")
     s.set_defaults(func=cmd_stats)
