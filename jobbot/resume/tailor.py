@@ -195,61 +195,34 @@ def tailor(
 
 
 def fabrication_check(profile: Profile, tailored: dict[str, Any]) -> list[str]:
-    """Flag anything in the output that has no basis in the profile.
+    """Flag anything in the output with no basis in the profile.
 
-    A cheap, mechanical backstop to the prompt rules: companies, titles and
-    numbers are checked against the source. Catching an invented employer here
-    is much better than catching it in an interview.
+    A mechanical backstop to the prompt rules. It distinguishes two severities,
+    because they are not the same kind of error:
+
+    HALT -- an employer, title, or metric that is not in the profile. These are
+    factual claims about the candidate's history. Getting one wrong is resume
+    fraud, so the application stops.
+
+    SANITIZE -- a skill label the profile does not list. Often a legitimate
+    summary of real work ("computer vision" for someone who shipped Florence-2
+    and SAM2 pipelines), sometimes an overreach. Dropping the label is both
+    safer and less destructive than discarding an otherwise-correct
+    application, so the skill is removed and the run continues.
+
+    Matching is token-based. "Founders, Inc. (Pascal, Founders Inc Canopy)" is
+    the same employer as "Founders, Inc." with the parenthetical moved, not a
+    new one.
     """
     problems: list[str] = []
 
-    real_companies = {e.company.strip().lower() for e in profile.experience}
-    real_titles = {e.title.strip().lower() for e in profile.experience}
-    for e in tailored.get("experience", []):
-        if e.get("company", "").strip().lower() not in real_companies:
-            problems.append(f"unknown employer in output: {e.get('company')!r}")
-        if e.get("title", "").strip().lower() not in real_titles:
-            problems.append(f"unknown title in output: {e.get('title')!r}")
-
-    import re
-    source_nums: set[str] = set()
-    for e in profile.experience:
-        for b in e.bullets:
-            source_nums.update(re.findall(r"\d[\d,.]*%?", b))
-    for e in tailored.get("experience", []):
-        for b in e.get("bullets", []):
-            for n in re.findall(r"\d[\d,.]*%?", b):
-                if len(n) > 2 and n not in source_nums:
-                    problems.append(f"number {n!r} not present in the source bullets: {b[:70]!r}")
-
-    # A skill is "real" if it appears anywhere the candidate demonstrably used
-    # it: the skills block, a role's tech stack, or a project's tech stack.
-    # Checking only the skills block rejected "schema.org JSON-LD", which is
-    # named in an actual EverSettled bullet.
-    real_skills = {s.strip().lower() for items in profile.skills.values() for s in items}
-    for e in profile.experience:
-        real_skills |= {t.strip().lower() for t in (e.tech or [])}
-    for pr in profile.projects:
-        real_skills |= {t.strip().lower() for t in (pr.tech or [])}
-    real_skills.discard("")
-
     def _sig(text: str) -> set[str]:
-        """Significant, consistently-singularized tokens.
-
-        The general-purpose stemmer is inconsistent here ("pipelines" -> "pipelin"
-        but "pipeline" -> "pipeline", and 4-letter "apis" is left alone), which
-        made real skills look invented. Simple singularization is both sufficient
-        and stable for skill names.
-        """
         words = re.findall(r"[a-z0-9+#.]+", (text or "").lower())
         out: set[str] = set()
         for w in words:
             w = w.strip(".")
-            if len(w) < 2 or w in {"and", "the", "of", "for", "with", "a", "an"}:
+            if len(w) < 2 or w in {"and", "the", "of", "for", "with", "a", "an", "inc", "llc"}:
                 continue
-            # Only drop "es" after a sibilant ("boxes" -> "box"). Applying it
-            # blindly turns "pipelines" into "pipelin", which then fails to match
-            # "pipeline" and makes a real skill look invented.
             if len(w) > 3 and re.search(r"(s|x|z|ch|sh)es$", w):
                 w = w[:-2]
             elif len(w) > 2 and w.endswith("s") and not w.endswith("ss"):
@@ -257,28 +230,87 @@ def fabrication_check(profile: Profile, tailored: dict[str, Any]) -> list[str]:
             out.add(w)
         return out
 
-    real_token_sets = [(_sig(s), s) for s in real_skills]
+    def _known(candidate: str, reals: list[str]) -> bool:
+        c = _sig(candidate)
+        if not c:
+            return True
+        for r in reals:
+            rs = _sig(r)
+            if rs and (rs <= c or c <= rs):
+                return True
+        return False
 
-    for cat, items in _coerce_skills(tailored.get("skills")).items():
-        for s in items:
-            cand = _sig(s)
-            if not cand:
-                continue
-            ok = False
-            for real, _orig in real_token_sets:
-                if not real:
-                    continue
-                # Accept when one skill's significant tokens are contained in the
-                # other's: a real skill with a qualifier ("Next.js (SSR/ISR)") or a
-                # natural rephrasing ("REST API design" for "REST APIs") is not an
-                # invention. A genuinely new skill shares no token set and is caught.
-                if real <= cand or cand <= real:
-                    ok = True
-                    break
-            if not ok:
-                problems.append(f"skill not in profile: {s!r} (under {cat!r})")
+    real_companies = [e.company for e in profile.experience]
+    real_titles = [e.title for e in profile.experience]
+    for e in tailored.get("experience", []):
+        if not _known(e.get("company", ""), real_companies):
+            problems.append(f"unknown employer in output: {e.get('company')!r}")
+        if not _known(e.get("title", ""), real_titles):
+            problems.append(f"unknown title in output: {e.get('title')!r}")
+
+    source_nums: set[str] = set()
+    for e in profile.experience:
+        for b in e.bullets:
+            source_nums.update(re.findall(r"\d[\d,.]*%?", b))
+    for pr in profile.projects:
+        for b in pr.bullets:
+            source_nums.update(re.findall(r"\d[\d,.]*%?", b))
+    for x in profile.publications + profile.awards:
+        source_nums.update(re.findall(r"\d[\d,.]*%?", x))
+
+    for e in tailored.get("experience", []):
+        for b in e.get("bullets", []):
+            for n in re.findall(r"\d[\d,.]*%?", b):
+                if len(n) > 2 and n not in source_nums:
+                    problems.append(f"number {n!r} not present in the source bullets: {b[:70]!r}")
 
     return problems
+
+
+def sanitize_skills(profile: Profile, tailored: dict[str, Any]) -> list[str]:
+    """Drop skill labels the profile does not support. Returns what was removed.
+
+    Non-fatal by design: an unlisted skill is removed rather than allowed to
+    discard an application whose experience section is entirely accurate.
+    """
+    real = {s.strip().lower() for items in profile.skills.values() for s in items}
+    for e in profile.experience:
+        real |= {t.strip().lower() for t in (e.tech or [])}
+    for pr in profile.projects:
+        real |= {t.strip().lower() for t in (pr.tech or [])}
+    real.discard("")
+
+    def _sig(text: str) -> set[str]:
+        words = re.findall(r"[a-z0-9+#.]+", (text or "").lower())
+        out: set[str] = set()
+        for w in words:
+            w = w.strip(".")
+            if len(w) < 2 or w in {"and", "the", "of", "for", "with", "a", "an"}:
+                continue
+            if len(w) > 3 and re.search(r"(s|x|z|ch|sh)es$", w):
+                w = w[:-2]
+            elif len(w) > 2 and w.endswith("s") and not w.endswith("ss"):
+                w = w[:-1]
+            out.add(w)
+        return out
+
+    real_sets = [_sig(r) for r in real]
+    removed: list[str] = []
+    cleaned: dict[str, list[str]] = {}
+    for cat, items in _coerce_skills(tailored.get("skills")).items():
+        keep = []
+        for sk in items:
+            c = _sig(sk)
+            if c and any(rs and (rs <= c or c <= rs) for rs in real_sets):
+                keep.append(sk)
+            else:
+                removed.append(f"{sk} (under {cat})")
+        if keep:
+            cleaned[cat] = keep
+    tailored["skills"] = cleaned
+    if removed:
+        log.info("resume.skills_sanitized", removed=removed[:6])
+    return removed
 
 
 CRITIQUE_TOOL: dict[str, Any] = {
@@ -453,6 +485,7 @@ def refine(
                     + [s for s in items if s.strip().lower() not in want])
 
         # A revision that smuggled in a new fact is worse than no revision.
+        sanitize_skills(profile, tailored)
         problems = fabrication_check(profile, tailored)
         if problems:
             log.warning("resume.refine_rejected", round=rnd, problems=problems[:3])

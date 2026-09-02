@@ -63,6 +63,7 @@ education:
     start: null
     end: 2027-05-01            # expected date is fine
     completed: false
+    gpa: null                  # e.g. 3.7 - omit or leave null to skip GPA questions
 
 projects:
   - name: example-project

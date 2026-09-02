@@ -87,6 +87,7 @@ _SCREENING_MAP: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(highest )?(level of )?education|degree", re.I), "education_degree"),
 ]
 
+_GPA = re.compile(r"\bgpa\b|grade point average", re.I)
 _SALARY = re.compile(r"salary|compensation|pay (expectation|range)|desired (pay|comp)", re.I)
 _YOE = re.compile(r"years? of (professional )?experience|how many years", re.I)
 
@@ -120,7 +121,9 @@ def classify(field: FormField) -> None:
         if pat.search(label):
             field.profile_key = f"identity.{key}"
             return
-    if _SALARY.search(label):
+    if _GPA.search(label):
+        field.profile_key = "gpa"
+    elif _SALARY.search(label):
         field.profile_key = "compensation"
     elif _YOE.search(label):
         field.profile_key = "years_experience"
@@ -162,6 +165,21 @@ def deterministic_answers(
                     answers.append(ProposedAnswer(f.field_id, s, AnswerSource.PROFILE,
                                                   0.9, "bolstering range"))
                     continue
+
+        elif key == "gpa":
+            gpa = next((e.gpa for e in profile.education if e.gpa is not None), None)
+            if gpa is not None:
+                val: Any = gpa
+                if f.options:
+                    m, _ = match_numeric_range(float(gpa), f.option_labels())
+                    if m:
+                        val = m
+                    else:
+                        chosen, _, _ = match_option(str(gpa), f.option_labels())
+                        val = chosen if chosen else str(gpa)
+                answers.append(ProposedAnswer(f.field_id, val, AnswerSource.PROFILE,
+                                              1.0, "profile education GPA"))
+                continue
 
         elif key == "years_experience":
             yrs = profile.total_years_experience
@@ -269,8 +287,12 @@ def profile_digest(profile: Profile) -> str:
             lines.append(f"    tech: {', '.join(e.tech)}")
     lines += ["", "EDUCATION:"]
     for ed in p.education:
-        lines.append(f"- {ed.degree} in {ed.field_of_study}, {ed.school}"
-                     + (f" ({ed.end.year})" if ed.end else ""))
+        bits = f"- {ed.degree} in {ed.field_of_study}, {ed.school}"
+        if ed.end:
+            bits += f" ({'expected ' if not ed.completed else ''}{ed.end.year})"
+        if ed.gpa is not None:
+            bits += f", GPA {ed.gpa}"
+        lines.append(bits)
     lines += ["", "SKILLS:"]
     for cat, items in p.skills.items():
         lines.append(f"- {cat}: {', '.join(items)}")

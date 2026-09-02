@@ -42,7 +42,7 @@ from jobbot.browser import capture as cap
 from jobbot.browser.session import BrowserSession
 from jobbot.discovery.sources import JobPost, ghost_score
 from jobbot.forms.fill import apply_answer
-from jobbot.forms.model import ParsedForm, ProposedAnswer
+from jobbot.forms.model import AnswerSource, FieldKind, ParsedForm, ProposedAnswer
 from jobbot.healer import checkpoints as ck
 from jobbot.healer.answer import deterministic_answers, model_answers
 from jobbot.llm.client import LLMClient
@@ -50,7 +50,7 @@ from jobbot.notify import Notification, reliability_score
 from jobbot.notify import send as notify_send
 from jobbot.profile import Profile
 from jobbot.resume.render import render_one_page
-from jobbot.resume.tailor import fabrication_check, refine, tailor
+from jobbot.resume.tailor import fabrication_check, refine, sanitize_skills, tailor
 from jobbot.tracker.answers_csv import AnswerLog
 from jobbot.tracker.csv_tracker import Application, Status, Tracker
 
@@ -313,6 +313,9 @@ class Orchestrator:
             next((h.get("final_ats_score", 0.0) for h in reversed(critique_history)
                   if "final_ats_score" in h), 0.0))
 
+        dropped = sanitize_skills(self.profile, tailored)
+        if dropped:
+            (audit / "skills_removed.txt").write_text("\n".join(dropped))
         fabrications = fabrication_check(self.profile, tailored)
         if fabrications:
             # A resume that overstates is worse than no application.
@@ -387,7 +390,6 @@ class Orchestrator:
         # Always attach the resume. Nothing upstream emits an answer for a file
         # field, so without this the PDF is generated and then never uploaded --
         # which the verifier correctly refuses to submit.
-        from jobbot.forms.model import AnswerSource, FieldKind
         for f in form.fields:
             if f.kind is FieldKind.FILE and not any(a.field_id == f.field_id for a in answers):
                 answers.append(ProposedAnswer(
@@ -580,6 +582,18 @@ class Orchestrator:
         queue: list[tuple[float, JobPost]] = []
         for p in posts:
             if self.tracker.already_applied(p.job_id):
+                continue
+            # Never queue a posting we cannot apply to on its own ATS.
+            # An unresolved aggregator listing means the only route is the
+            # aggregator's own apply flow -- and LinkedIn Easy Apply is the one
+            # platform with documented account bans for exactly that. Skip it
+            # rather than fall back to it.
+            if p.ats in (ATS.UNKNOWN, ATS.LINKEDIN):
+                self.tracker.upsert(Application(
+                    job_id=p.job_id, company=p.company, title=p.title,
+                    ats=p.ats.value, job_url=p.url,
+                    status=Status.UNREACHABLE.value,
+                    error="no ATS apply URL resolved; not applying via the aggregator"))
                 continue
             g = ghost_score(p, posts)
             if g > self.cfg.max_ghost_score:
