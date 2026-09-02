@@ -1,0 +1,131 @@
+# Copy to config/profile.yaml and fill in with YOUR real details.
+# config/profile.yaml is gitignored - it holds your personal data.
+#
+# Everything the bot says in your name comes from this file. The `screening`
+# block is the important part: any question judged legally significant is
+# answered ONLY from a confirmed value here. If one is missing, the run halts
+# and asks you. Nothing is ever guessed, defaulted to "yes", or invented.
+
+identity:
+  first_name: Jane
+  last_name: Doe
+  email: jane.doe@example.com
+  phone: "(555) 123-4567"
+  linkedin: https://linkedin.com/in/janedoe
+  github: https://github.com/janedoe
+  website: ""
+  location:
+    city: San Francisco
+    state: CA
+    country: United States
+    postal_code: "94107"
+    street: ""
+
+headline: Software Engineer - backend and data infrastructure
+summary: >-
+  One or two concrete sentences. Delete this if it only restates your
+  experience section; a weak summary costs space a bullet could use.
+
+target_titles:
+  - Software Engineer
+  - Software Engineer Intern
+  - Backend Engineer
+  - Full Stack Engineer
+target_locations: [San Francisco, Remote]
+remote_ok: true
+onsite_ok: true
+hybrid_ok: true
+willing_to_relocate: false
+# Apply at >=50% requirement match. Interview odds plateau around there, so
+# self-screening at 80% costs you interviews.
+min_requirement_match: 0.5
+
+experience:
+  - company: Example Corp
+    title: Software Engineer
+    start: 2023-06-01
+    end: null                  # null = present
+    location: San Francisco, CA
+    tech: [Python, Go, PostgreSQL, Docker]
+    bullets:
+      # Keep your real numbers. Tailoring may rephrase these; it may never
+      # invent a metric that is not already here.
+      - Cut p99 write latency from 840ms to 95ms by rebuilding the ingestion path.
+      - Migrated 38 services with no customer-visible downtime.
+    # If a >6 month gap precedes this role, explain it. Roughly half of
+    # employers auto-screen unexplained gaps over six months.
+    gap_explanation: null
+
+education:
+  - school: Example University
+    degree: B.S.
+    field_of_study: Computer Science
+    start: null
+    end: 2027-05-01            # expected date is fine
+    completed: false
+
+projects:
+  - name: example-project
+    description: One line on what it does.
+    url: https://github.com/janedoe/example-project
+    tech: [Python, FastAPI]
+    bullets:
+      - What you built and one real constraint you designed around.
+
+skills:
+  Languages: [Python, Go, TypeScript, SQL]
+  Infrastructure: [PostgreSQL, Docker, Redis, Linux]
+  Frameworks: [FastAPI, React, Next.js]
+
+# Peer-reviewed work, competition wins, selective programs. These are expensive
+# to fake and cheap to verify, which is exactly why they still carry weight.
+publications: []
+awards: []
+
+compensation:
+  target_base: null            # null = leave salary fields to be composed
+  minimum_base: null
+  currency: USD
+
+# --- Preferences. Not legally significant, but forms ask constantly. Without
+# these the model correctly refuses to answer and required fields stay empty.
+earliest_start: "Two weeks from a signed offer"
+notice_period_weeks: 2
+work_preference: hybrid        # remote | hybrid | onsite | flexible
+timeline_notes: ""
+how_heard: "Company website"
+why_this_company_notes: >-
+  Raw material for "why us" answers - what genuinely interests you and which of
+  your projects is the closest match. Not a canned paragraph; the model writes
+  from this, per company.
+
+# --- Legally significant. Set every one you are willing to answer.
+# A plain value here is treated as CONFIRMED (you stated it).
+# Omit one and the bot stops rather than guessing.
+screening:
+  work_authorization: true
+  requires_sponsorship_now: false
+  requires_sponsorship_future: false
+  citizenship: "United States"
+  visa_status: "US Citizen or Permanent Resident"
+  criminal_history: false
+  background_check_consent: true
+  drug_test_consent: true
+  veteran_status: "I am not a protected veteran"
+  disability_status: "I do not wish to answer"
+  age_over_18: true
+  education_degree: "Bachelor's Degree"
+  education_completed: false
+  previously_employed_here: false
+  previously_interviewed_here: false
+  related_to_employee: false
+  government_clearance: false
+  non_compete: false
+  professional_license: false
+  gender: "I do not wish to answer"
+  ethnicity: "I do not wish to answer"
+  date_of_birth: ""
+  # Legal/contractual acknowledgements. Set deliberately - the bot will never
+  # agree to an arbitration clause on your behalf by inference.
+  arbitration_agreement: "Yes"
+  policy_acknowledgement: "Yes"
