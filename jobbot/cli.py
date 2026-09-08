@@ -42,6 +42,15 @@ async def _collect(sources: list[str], limit_per: int) -> list[JobPost]:
             elif kind == "workday":
                 tenant, site, pod = (rest.split("/") + ["wd1"])[:3]
                 posts += await d.workday(tenant, site, pod, max_jobs=limit_per)
+            elif kind == "linkedin":
+                # Aggregator rows carry no apply endpoint, so resolve each one to
+                # the company's own board before it reaches the queue. The
+                # orchestrator refuses anything still unresolved rather than
+                # falling back to LinkedIn's own apply flow.
+                from jobbot.discovery.aggregator import enrich_with_boards, scrape
+                found = await asyncio.to_thread(
+                    scrape, rest, results_wanted=max(20, limit_per))
+                posts += await enrich_with_boards(found)
             else:
                 print(f"unknown source kind: {kind!r}", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001
@@ -216,7 +225,9 @@ def main(argv: list[str] | None = None) -> int:
 
     d = sub.add_parser("discover", help="find and rank jobs, no browser")
     d.add_argument("--source", action="append", required=True,
-                   help="greenhouse:slug | lever:slug | ashby:slug | workday:tenant/site/pod")
+                   help="greenhouse:slug | lever:slug | ashby:slug | "
+                        "smartrecruiters:slug | workable:slug | "
+                        "workday:tenant/site/pod | linkedin:search terms")
     d.add_argument("--limit", type=int, default=40)
     d.set_defaults(func=cmd_discover)
 
