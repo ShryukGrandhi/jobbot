@@ -41,7 +41,7 @@ from jobbot.ats.detect import ATS, REQUIRES_ACCOUNT, detect
 from jobbot.browser import capture as cap
 from jobbot.browser.session import BrowserSession
 from jobbot.discovery.sources import JobPost, ghost_score
-from jobbot.forms.fill import apply_answer
+from jobbot.forms.fill import apply_answer, q
 from jobbot.forms.model import AnswerSource, FieldKind, ParsedForm, ProposedAnswer
 from jobbot.healer import checkpoints as ck
 from jobbot.healer.answer import deterministic_answers, model_answers
@@ -462,7 +462,7 @@ class Orchestrator:
 
         # --- submit --------------------------------------------------------
         submitted_click = False
-        for sel in (f"button:has-text('{form.submit_label}')",
+        for sel in (f"button:has-text({q(form.submit_label)})",
                     "[data-automation-id='bottom-navigation-submit-button']",
                     "button[type=submit]", "input[type=submit]"):
             try:

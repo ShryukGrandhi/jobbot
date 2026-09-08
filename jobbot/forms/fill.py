@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import random
 import re
 from pathlib import Path
@@ -48,6 +49,19 @@ log = structlog.get_logger(__name__)
 
 class FillError(RuntimeError):
     pass
+
+
+def q(text: str) -> str:
+    """Quote a string for interpolation into a selector.
+
+    Option labels are employer-authored text, and apostrophes are everywhere in
+    them -- "Bachelor's Degree", "I don't wish to answer". Pasting one into
+    `label:has-text('...')` produced an unparseable selector, every fallback
+    threw the same way, and the field was silently left blank. json.dumps gives
+    a correctly escaped double-quoted string, which both CSS and Playwright's
+    text engine accept.
+    """
+    return json.dumps(str(text))
 
 
 async def _human_pause(lo: float = 0.12, hi: float = 0.38) -> None:
@@ -79,7 +93,7 @@ async def _locate(page: Any, field: FormField, timeout: int = 8000) -> Any:
         page.get_by_label(label, exact=False).first,
         page.get_by_role("textbox", name=label).first,
         page.get_by_role("combobox", name=label).first,
-        page.locator(f"[aria-label*='{label[:40]}']").first,
+        page.locator(f"[aria-label*={q(label[:40])}]").first,
     ):
         try:
             if await cand.count():
@@ -331,9 +345,9 @@ async def fill_radio(page: Any, field: FormField, value: Any) -> bool:
         return False
 
     await _human_pause()
-    for sel in (f"label:has-text('{chosen}')",
-                f"input[type=radio][value='{chosen}']",
-                f"[role=radio]:has-text('{chosen}')"):
+    for sel in (f"label:has-text({q(chosen)})",
+                f"input[type=radio][value={q(chosen)}]",
+                f"[role=radio]:has-text({q(chosen)})"):
         try:
             loc = page.locator(sel).first
             if await loc.count():
@@ -359,7 +373,7 @@ async def fill_checkbox(page: Any, field: FormField, value: bool) -> bool:
     except Exception:
         # Some designs hide the input and style the label; click that instead.
         try:
-            await page.locator(f"label[for='{field.field_id}']").first.click(timeout=3000)
+            await page.locator(f"label[for={q(field.field_id)}]").first.click(timeout=3000)
             return True
         except Exception:
             return False
