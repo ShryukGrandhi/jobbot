@@ -406,31 +406,36 @@ class Orchestrator:
                 filled += 1
         log.info("apply.filled", job_id=jid, filled=filled, total=len(form.fields))
 
-        (audit / "answers.json").write_text(json.dumps([
-            {
-                "field_id": a.field_id,
-                "label": (by_id[a.field_id].label if a.field_id in by_id else ""),
-                "kind": (by_id[a.field_id].kind.value if a.field_id in by_id else ""),
-                "required": (by_id[a.field_id].required if a.field_id in by_id else False),
-                "value": a.value if not isinstance(a.value, Path) else str(a.value),
-                "source": a.source.value,
-                "confidence": a.confidence,
-                "rationale": a.rationale,
-                "needs_human": a.needs_human,
-                "blocked_reason": a.blocked_reason,
-            }
-            for a in answers
-        ], indent=2, default=str))
+        def dump_answers() -> None:
+            (audit / "answers.json").write_text(json.dumps([
+                {
+                    "field_id": a.field_id,
+                    "label": (by_id[a.field_id].label if a.field_id in by_id else ""),
+                    "kind": (by_id[a.field_id].kind.value if a.field_id in by_id else ""),
+                    "required": (by_id[a.field_id].required if a.field_id in by_id else False),
+                    "value": a.value if not isinstance(a.value, Path) else str(a.value),
+                    "source": a.source.value,
+                    "confidence": a.confidence,
+                    "rationale": a.rationale,
+                    "needs_human": a.needs_human,
+                    "blocked_reason": a.blocked_reason,
+                }
+                for a in answers
+            ], indent=2, default=str))
+            self.answer_log.record(
+                job_id=jid, company=post.company, title=post.title,
+                ats=post.ats.value, job_url=post.url,
+                answers=json.loads((audit / "answers.json").read_text()))
 
-        self.answer_log.record(
-            job_id=jid, company=post.company, title=post.title,
-            ats=post.ats.value, job_url=post.url,
-            answers=json.loads((audit / "answers.json").read_text()))
+        dump_answers()
 
         # --- checkpoint 2 + healing ---------------------------------------
         verification, rounds = await ck.heal(
             page, self.llm, self.profile, form, answers, shots,
             max_rounds=self.cfg.max_heal_rounds, resume_path=resume_pdf)
+        # The healer rewrites answers in place, so re-record. Written once before
+        # the loop as well, so a crash mid-heal still leaves a ledger behind.
+        dump_answers()
         (audit / "verification.json").write_text(json.dumps({
             "ready": verification.ready_to_submit,
             "summary": verification.summary,

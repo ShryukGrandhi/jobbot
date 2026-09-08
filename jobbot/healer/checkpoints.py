@@ -321,7 +321,10 @@ async def heal(
             patch = ProposedAnswer(f.field_id, issue.suggested_value,
                                    AnswerSource.COMPOSED, 0.6, "healer fix")
             if await apply_answer(page, f, patch, resume_path=resume_path):
-                answers = [a for a in answers if a.field_id != f.field_id] + [patch]
+                # In place, not a rebind: the caller records this list as the
+                # ledger of what was actually entered, so a healed value that
+                # only existed in a local copy would never be recorded.
+                answers[:] = [a for a in answers if a.field_id != f.field_id] + [patch]
                 fixed += 1
 
         log.info("heal.round", round=rounds, blockers=len(v.blockers), fixed=fixed)
