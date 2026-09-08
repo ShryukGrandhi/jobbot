@@ -625,7 +625,18 @@ class Orchestrator:
         results: list[ApplicationResult] = []
         import random
         for i, (_, post) in enumerate(queue[:limit]):
-            results.append(await self.apply_to(post))
+            # Count against the cap as we go, not only against history. The
+            # pre-queue check reads a snapshot taken before the run, so without
+            # this a single run could send every posting at one company.
+            key = post.company.strip().lower()
+            if key and applied_companies.get(key, 0) >= self.cfg.per_company_cap:
+                log.info("run.company_cap_reached", company=post.company,
+                         cap=self.cfg.per_company_cap)
+                continue
+            r = await self.apply_to(post)
+            results.append(r)
+            if r.status in (Status.SUBMITTED.value, Status.CONFIRMED.value) and key:
+                applied_companies[key] = applied_companies.get(key, 0) + 1
             if i < min(limit, len(queue)) - 1:
                 await asyncio.sleep(random.uniform(*self.cfg.pace_seconds))
         return results
