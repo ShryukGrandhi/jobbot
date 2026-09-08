@@ -180,6 +180,14 @@ async def ensure_account(
         if err:
             return AccountResult(False, False, email, error=err[:200])
 
+        # Save the credential the moment the tenant accepts it, BEFORE the email
+        # round-trip. Saving only on the success path meant a verification
+        # timeout left a real account on a real employer system whose generated
+        # password existed nowhere -- locking the user out of that tenant with no
+        # way to retry. A saved password for a half-verified account is
+        # recoverable; a lost one is not.
+        vault.save("workday", tenant, email, password)
+
         needed_code = False
         code_field = page.locator(A["verify_code"]).first
         if await code_field.count():
@@ -205,7 +213,6 @@ async def ensure_account(
             await cap.settle(page, quiet_ms=1200)
             log.info("workday.email_verified", tenant=tenant)
 
-        vault.save("workday", tenant, email, password)
         return AccountResult(created=True, signed_in=True, username=email,
                              needed_email_code=needed_code)
 
