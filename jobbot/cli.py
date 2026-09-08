@@ -198,6 +198,18 @@ def cmd_ats_test(args) -> int:
     return 0
 
 
+def cmd_report(args) -> int:
+    """Every answer entered for one application, field by field."""
+    from jobbot.report import report
+
+    d = Path(args.audit_dir)
+    if not d.is_dir():
+        print(f"no such audit dir: {d}", file=sys.stderr)
+        return 1
+    print(report(d))
+    return 0
+
+
 def cmd_stats(args) -> int:
     t = Tracker(args.csv)
     s = t.stats()
@@ -240,6 +252,10 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--pdf", required=True)
     a.add_argument("--lever-url", help="a jobs.lever.co/<co>/<id>/apply URL for a live parse test")
     a.set_defaults(func=cmd_ats_test)
+
+    rp = sub.add_parser("report", help="every answer entered, field by field")
+    rp.add_argument("audit_dir", help="data/applications/<job_id>/")
+    rp.set_defaults(func=cmd_report)
 
     s = sub.add_parser("stats", help="summarize the tracker")
     s.set_defaults(func=cmd_stats)
