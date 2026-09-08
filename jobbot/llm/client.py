@@ -217,6 +217,17 @@ class LLMClient:
 
         log.info("llm.init", provider=self.provider, model=self.model)
 
+    @property
+    def can_fall_back(self) -> bool:
+        """Only fail over to a backend that is actually usable.
+
+        `JOBBOT_LLM_FALLBACK=gemini` is the shipped default while GEMINI_API_KEY
+        is empty in .env.example. Switching to it then raises out of `call()` on
+        the first attempt and, because the switch is sticky, kills every later
+        call in the run -- strictly worse than retrying the primary.
+        """
+        return self.fallback == "gemini" and bool(os.environ.get("GEMINI_API_KEY"))
+
     # -- health / quota ----------------------------------------------------
 
     def health(self) -> dict[str, Any]:
@@ -289,7 +300,7 @@ class LLMClient:
             else:
                 msg = self.client.messages.create(**kwargs)
         except Exception as exc:  # noqa: BLE001
-            if _is_quota_exhausted(exc) and self.fallback == "gemini":
+            if _is_quota_exhausted(exc) and self.can_fall_back:
                 log.warning("llm.quota_exhausted_failing_over", error=str(exc)[:200])
                 self.fallback_active = True
                 return self._call_fallback(system, blocks, tool, kwargs["max_tokens"])
@@ -297,7 +308,7 @@ class LLMClient:
                 self._primary_failures += 1
                 # Repeated transient failure is indistinguishable from an outage.
                 # Switch rather than burn the retry budget on a dead backend.
-                if self._primary_failures >= 3 and self.fallback == "gemini":
+                if self._primary_failures >= 3 and self.can_fall_back:
                     log.warning("llm.primary_unhealthy_failing_over",
                                 failures=self._primary_failures)
                     self.fallback_active = True
@@ -397,9 +408,15 @@ def _is_transient(exc: Exception) -> bool:
 
 
 def _is_quota_exhausted(exc: Exception) -> bool:
-    """Subscription window exhausted -- retrying will not help, only waiting."""
+    """Subscription window exhausted -- retrying will not help, only waiting.
+
+    Deliberately does NOT match a plain `rate_limit_error`. Anthropic returns
+    that type for an ordinary per-minute 429, which clears in seconds; treating
+    it as exhaustion made the first burst of concurrency fail the whole run over
+    to the fallback permanently.
+    """
     blob = str(exc).lower()
     return any(s in blob for s in (
         "out of extra usage", "usage limit", "quota exceeded",
-        "rate_limit_error", "exceeded your current quota",
+        "exceeded your current quota",
     ))
