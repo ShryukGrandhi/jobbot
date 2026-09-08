@@ -555,6 +555,17 @@ class Orchestrator:
             log.warning("project.smoke_failed", output=smoke["output"][-200:])
             return None, ""
 
+        if self.cfg.dry_run:
+            # Creating a repository is public and not retractable, so it does not
+            # belong in a run the user asked to stop before submitting. The plan
+            # is still built and smoke-tested locally; only the push is withheld.
+            # No URL is returned, so the resume never prints a link to a repo
+            # that does not exist.
+            log.info("project.dry_run_not_published", repo=plan["repo_name"],
+                     local=str(local))
+            return ({"name": plan["repo_name"],
+                     "bullets": plan.get("resume_bullets", [])}, "")
+
         import shutil
         shutil.rmtree(local, ignore_errors=True)
         pub = publish(ident, plan, private=self.cfg.publish_project_private,
