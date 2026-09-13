@@ -367,6 +367,15 @@ async def _dom_value(page: Any, f: FormField) -> str:
             return ""
 
 
+
+def _is_consent_key(f: FormField) -> bool:
+    """True when a field is an agreement/acknowledgement, not a fact."""
+    from jobbot.healer.answer import _CONSENT_KEYS, classify
+    if f.profile_key is None:
+        classify(f)
+    return f.profile_key in _CONSENT_KEYS
+
+
 async def _dom_truth(page: Any, form: ParsedForm, answers: list[ProposedAnswer],
                      issues: list[VerificationIssue]) -> tuple[list[VerificationIssue], set[str]]:
     """Let the DOM overrule vision on "truncated" text.
@@ -395,6 +404,19 @@ async def _dom_truth(page: Any, form: ParsedForm, answers: list[ProposedAnswer],
                                       (i.problem or "") + " (DOM holds the full value; the box scrolls)",
                                       "warning", i.suggested_value)
                 confirmed.add(f.label.strip().lower()[:60])
+        elif (i.severity == "blocker" and f is not None
+              and _is_consent_key(f) and _norm_ws(await _dom_value(page, f))):
+            # A consent field (arbitration, policy acknowledgement) that holds
+            # ANY non-empty selection has been agreed to -- that is what the
+            # candidate's confirmed "Yes" means. The verifier was handed the
+            # raw "Yes" as the intended value and flags a false mismatch
+            # against the displayed agreement sentence; the selection itself
+            # is the agreement.
+            log.info("verify.consent_selected", label=f.label[:50])
+            i = VerificationIssue(i.field_id, i.label,
+                                  (i.problem or "") + " (a consent option is selected; agreed)",
+                                  "warning", i.suggested_value)
+            confirmed.add(f.label.strip().lower()[:60])
         out.append(i)
     return out, confirmed
 
@@ -602,7 +624,9 @@ async def heal(
                 continue
             if value is None:
                 value = issue.suggested_value
-            if f.options:
+            from jobbot.healer.answer import real_options
+            labels = real_options(f)
+            if labels:
                 # Only a value from the list can be entered, and the verifier
                 # does invent ones that are not on it: for "How did you hear
                 # about this job?" it suggested "Company website / Careers
@@ -611,7 +635,13 @@ async def heal(
                 # Google. Snap it to a real option, and where nothing is close,
                 # let the model choose from the list rather than apply a value
                 # the control cannot hold.
-                labels = f.option_labels()
+                #
+                # real_options, not option_labels: a closed react-select is
+                # parsed with a single "Select..." placeholder, and snapping
+                # against that fails every time. When there are no real static
+                # options the value is passed straight to apply_answer below,
+                # which opens the menu and matches the live options -- the same
+                # path the initial fill uses.
                 snapped, score, _ = match_option(str(value), labels)
                 if snapped is None and is_decline(value):
                     # "I do not wish to answer" vs "Decline To Self Identify":
@@ -671,9 +701,12 @@ async def heal(
                 classify(f)
             if f.profile_key in LEGALLY_SIGNIFICANT:
                 continue
-            decline = match_decline(f.option_labels())
-            if decline is None:
-                continue
+            from jobbot.healer.answer import real_options
+            # Prefer the form's own decline wording; but a react-select parsed
+            # while closed shows only "Select...", so fall back to a canonical
+            # decline and let apply_answer open the menu and match it live --
+            # the same way the initial fill resolves decline synonyms.
+            decline = match_decline(real_options(f)) or "I do not wish to answer"
             patch = ProposedAnswer(f.field_id, decline, AnswerSource.DERIVED, 0.9,
                                    "voluntary self-ID left unprovided; declined, not invented")
             if await apply_answer(page, f, patch, resume_path=resume_path):

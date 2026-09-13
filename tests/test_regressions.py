@@ -1037,3 +1037,70 @@ def test_voluntary_self_id_is_declined_not_invented(monkeypatch, tmp_path) -> No
     assert by["r"] == "Decline To Self Identify"
     assert "v" not in by, "veteran status is legally significant; the profile owns it"
     assert v.ready_to_submit
+
+
+def test_healer_passes_closed_combobox_values_to_the_filler(monkeypatch, tmp_path) -> None:
+    """A react-select parsed while closed shows only "Select...". The healer
+    must not snap against that stale list (it always fails); it must hand the
+    value to apply_answer, which opens the menu and matches live -- the bug
+    that left arbitration, race and Hispanic/Latino permanently unhealed.
+    """
+    import asyncio
+
+    from jobbot.forms import fill as fill_mod
+    from jobbot.forms.model import (FieldKind, FieldOption, FormField, ParsedForm,
+                                    Verification, VerificationIssue)
+    from jobbot.healer import checkpoints as ck
+    from jobbot.profile import Profile
+
+    race = FormField("r", "Please identify your race", FieldKind.COMBOBOX, required=True,
+                     options=[FieldOption("Select...")])   # closed at parse time
+    form = ParsedForm(fields=[race])
+    prof = Profile.model_validate({"identity": {"first_name": "J", "last_name": "D",
+                                                "email": "j@d.com"}, "screening": {}})
+
+    async def fake_verify(page, llm, profile, form_, answers, shots, *, round_no):
+        if round_no == 1:
+            return Verification(unfilled_required=["Please identify your race"]), None
+        return Verification(ready_to_submit=True), None
+
+    applied = []
+
+    async def fake_apply(page, f, patch, resume_path=None):
+        # the filler receives the decline text, not "Select..."
+        applied.append(patch.value); return True
+
+    monkeypatch.setattr(ck, "checkpoint_verify", fake_verify)
+    monkeypatch.setattr(fill_mod, "apply_answer", fake_apply)
+    v, n = asyncio.run(ck.heal(None, None, prof, form, [], tmp_path, max_rounds=3))
+    assert applied and applied[0] != "Select...", applied
+    assert v.ready_to_submit
+
+
+def test_a_selected_consent_is_not_a_false_mismatch() -> None:
+    """arbitration combobox holds the agreement sentence; the verifier was
+    handed "Yes" and called it a mismatch. A consent field with any selection
+    is agreed -> the blocker downgrades to a warning."""
+    import asyncio
+
+    from jobbot.forms.model import (AnswerSource, FieldKind, FormField, ParsedForm,
+                                    ProposedAnswer, VerificationIssue)
+    from jobbot.healer import checkpoints as ck
+
+    arb = FormField("a", "Agreement to Arbitrate", FieldKind.COMBOBOX, required=True,
+                    selector="#a", profile_key="arbitration_agreement")
+    form = ParsedForm(fields=[arb])
+    answers = [ProposedAnswer("a", "Yes", AnswerSource.PROFILE, 1.0, "x")]
+    issues = [VerificationIssue("a", "Agreement to Arbitrate",
+                                'selected value "I understand and agree..." does not match "Yes"',
+                                "blocker", "Yes")]
+
+    class Loc:
+        def __init__(self, v): self.v = v; self.first = self
+        async def input_value(self, timeout=0): return self.v
+
+    class Page:
+        def locator(self, sel): return Loc("I understand and agree to the terms")
+
+    out, confirmed = asyncio.run(ck._dom_truth(Page(), form, answers, issues))
+    assert out[0].severity == "warning" and "agreed" in out[0].problem
