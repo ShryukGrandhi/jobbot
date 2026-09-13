@@ -34,6 +34,7 @@ import structlog
 
 from jobbot.browser import capture as cap
 from jobbot.forms.model import (
+    AnswerSource,
     FieldKind, FormField, ParsedForm, ProposedAnswer,
     Verification, VerificationIssue,
 )
@@ -42,7 +43,7 @@ from jobbot.llm.client import LLMClient, cached_system
 from jobbot.llm.schemas import (
     KNOCKOUT_TOOL, PARSE_FORM_TOOL, POST_SUBMIT_TOOL, VERIFY_FORM_TOOL,
 )
-from jobbot.forms.matching import match_option
+from jobbot.forms.matching import is_decline, match_decline, match_option
 from jobbot.profile import LEGALLY_SIGNIFICANT, Profile
 
 
@@ -471,6 +472,7 @@ async def heal(
     by_id = {f.field_id: f for f in form.fields}
     rounds = 0
     v = Verification()
+    det_by_id: dict[str, Any] | None = None   # profile answers, computed on demand
 
     for rounds in range(1, max_rounds + 1):
         v, _ = await checkpoint_verify(page, llm, profile, form, answers,
@@ -484,8 +486,10 @@ async def heal(
             f = by_id.get(issue.field_id)
             if f is None:
                 continue
+            value: Any = None
+            source, confidence, why = AnswerSource.COMPOSED, 0.6, "healer fix"
             if f.profile_key in LEGALLY_SIGNIFICANT:
-                # Never let the healer rewrite a legally significant answer.
+                # Never let the healer COMPOSE a legally significant answer.
                 #
                 # Keyed on the profile's own denylist, not on the vision pass's
                 # legally_significant flag: vision marked "End date month" and
@@ -494,21 +498,34 @@ async def heal(
                 # ready_to_submit however many rounds it ran. What must never be
                 # model-authored is the fixed set of status questions, and those
                 # all carry a profile_key.
-                log.warning("heal.refused_legal", label=f.label[:60],
-                            key=f.profile_key)
+                #
+                # A confirmed profile value that simply did not stick -- a
+                # consent checkbox that ignored the first click, a combobox
+                # that closed early -- is the candidate's own answer, not the
+                # model's, and may be applied again verbatim.
+                if det_by_id is None:
+                    from jobbot.healer.answer import deterministic_answers
+                    det_by_id = {a.field_id: a for a in deterministic_answers(profile, form)[0]
+                                 if a.submittable}
+                again = det_by_id.get(f.field_id)
+                if again is None:
+                    log.warning("heal.refused_legal", label=f.label[:60],
+                                key=f.profile_key)
+                    continue
+                log.info("heal.reapplied_profile", label=f.label[:60], key=f.profile_key)
+                value = again.value
+                source, confidence, why = AnswerSource.PROFILE, 1.0, "profile value re-applied"
+            if value is None and issue.suggested_value in (None, ""):
                 continue
-            if issue.suggested_value in (None, ""):
-                continue
-            if _looks_like_a_description(str(issue.suggested_value)):
+            if value is None and _looks_like_a_description(str(issue.suggested_value)):
                 # The verifier sometimes answers with a description of the value
                 # ("Candidate's real phone number") instead of the value. Typing
                 # that into a live form is worse than leaving it blank.
                 log.warning("heal.rejected_placeholder", label=f.label[:50],
                             suggested=str(issue.suggested_value)[:60])
                 continue
-            from jobbot.forms.model import AnswerSource
-
-            value = issue.suggested_value
+            if value is None:
+                value = issue.suggested_value
             if f.options:
                 # Only a value from the list can be entered, and the verifier
                 # does invent ones that are not on it: for "How did you hear
@@ -520,6 +537,13 @@ async def heal(
                 # the control cannot hold.
                 labels = f.option_labels()
                 snapped, score, _ = match_option(str(value), labels)
+                if snapped is None and is_decline(value):
+                    # "I do not wish to answer" vs "Decline To Self Identify":
+                    # the filler already resolves these; the healer must too,
+                    # or every EEO field the verifier flags stays flagged.
+                    snapped = match_decline(labels)
+                    if snapped is not None:
+                        log.info("heal.decline_synonym", label=f.label[:50], chose=snapped)
                 if snapped is None:
                     from jobbot.healer.answer import model_answers
                     picked = await asyncio.to_thread(
@@ -538,8 +562,7 @@ async def heal(
                     continue
                 value = snapped
 
-            patch = ProposedAnswer(f.field_id, value,
-                                   AnswerSource.COMPOSED, 0.6, "healer fix")
+            patch = ProposedAnswer(f.field_id, value, source, confidence, why)
             if await apply_answer(page, f, patch, resume_path=resume_path):
                 # In place, not a rebind: the caller records this list as the
                 # ledger of what was actually entered, so a healed value that

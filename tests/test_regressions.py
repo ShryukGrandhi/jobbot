@@ -515,6 +515,8 @@ def test_only_unsettled_failures_are_retried() -> None:
                                  "legally significant answer missing from profile"))
 
     assert _worth_retrying(r(Status.NEEDS_HUMAN.value, "verification not clean"))
+    assert not _worth_retrying(r(Status.NEEDS_HUMAN.value,
+                                 "awaiting candidate: Agreement to Arbitrate"))
     assert _worth_retrying(r(Status.UNREACHABLE.value, "Timeout 8000ms exceeded"))
     assert _worth_retrying(r(Status.FAILED.value, "sign-in did not take"))
 
@@ -764,3 +766,77 @@ def test_the_context_never_loses_its_last_window(tmp_path, monkeypatch) -> None:
         assert fake.pages, "a lost keeper is recreated before the tab closes"
 
     asyncio.run(scenario())
+
+
+def test_an_application_is_retried_in_its_own_tab_until_it_settles(tmp_path, monkeypatch) -> None:
+    """A crash mid-form used to close the tab and file the job as failed.
+
+    Now the same tab is reused: two crashes, one unhealed result, then a
+    dry-run success must come back as the success, with the tab never
+    released in between. A settled result (knockout) must not be retried,
+    and a tab that is actually gone must be reported as such so the outer
+    loop can lease a new one.
+    """
+    import asyncio
+
+    from jobbot import orchestrator as mod
+    from jobbot.orchestrator import ApplicationResult, Orchestrator, RunConfig
+    from jobbot.tracker.csv_tracker import Status
+
+    monkeypatch.setattr(mod, "_retry_delay", lambda attempt: 0.0)
+
+    class Page:
+        closed = False
+        def is_closed(self): return self.closed
+
+    class Post:
+        job_id, company, url, title = "gh:1", "Acme", "https://x/apply", "SWE"
+
+    class Tracker:
+        def __init__(self): self.updates = []
+        def update(self, jid, **kw): self.updates.append(kw)
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.cfg = RunConfig(data_dir=tmp_path)
+    orch.tracker = Tracker()
+    audit = tmp_path / "a"; audit.mkdir()
+
+    script = [RuntimeError("gemini 400"), RuntimeError("Timeout 60000ms exceeded"),
+              ApplicationResult("gh:1", Status.FAILED.value, "2 required fields unhealed"),
+              ApplicationResult("gh:1", "dry_run", "verified but not submitted")]
+    calls = []
+
+    async def fake_apply(page, post, audit_, shots):
+        calls.append(page)
+        step = script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    orch._apply_in_tab = fake_apply
+    page = Page()
+    r = asyncio.run(orch._apply_with_retries(page, Post(), audit, audit / "s"))
+    assert r.status == "dry_run"
+    assert len(calls) == 4 and all(c is page for c in calls), "same tab every time"
+    assert (audit / "error.txt").read_text(encoding="utf-8").count("--- attempt") == 2
+    assert any(u.get("status") == Status.FILLING.value and "retry 2/25" in u["error"]
+               for u in orch.tracker.updates)
+
+    # settled: a knockout is final, no second try
+    script[:] = [ApplicationResult("gh:1", Status.KNOCKOUT_FAIL.value, "sponsorship")]
+    calls.clear()
+    r = asyncio.run(orch._apply_with_retries(page, Post(), audit, audit / "s"))
+    assert r.status == Status.KNOCKOUT_FAIL.value and len(calls) == 1
+
+    # the budget is honoured when --attempts is given
+    orch.cfg = RunConfig(data_dir=tmp_path, attempts_per_job=2)
+    script[:] = [RuntimeError("a"), RuntimeError("b"), RuntimeError("c")]
+    calls.clear()
+    r = asyncio.run(orch._apply_with_retries(page, Post(), audit, audit / "s"))
+    assert r.status == Status.FAILED.value and len(calls) == 2
+
+    # a dead tab is reported, not retried in place
+    dead = Page(); dead.closed = True
+    script[:] = [RuntimeError("Target page, context or browser has been closed")]
+    r = asyncio.run(orch._apply_with_retries(dead, Post(), audit, audit / "s"))
+    assert r.reason.startswith("tab died")

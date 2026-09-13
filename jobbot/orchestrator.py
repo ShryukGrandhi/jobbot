@@ -73,8 +73,11 @@ class RunConfig:
     make_github_project: bool = True
     publish_project_private: bool = False
     max_heal_rounds: int = 4
-    # How many times to work the same application before moving on.
-    attempts_per_job: int = 1
+    # How many times to work the same application before moving on. 0 means
+    # keep going until the result is settled (submitted, knocked out, needs
+    # the candidate) or MAX_ATTEMPTS is hit. Retries happen inside the same
+    # tab, with backoff, so a crash does not throw the tab away.
+    attempts_per_job: int = 0
     # Stay on one application until it is submitted. A form that has been
     # filled and healed represents real work and a real tab; abandoning it to
     # start the next job throws that away and leaves the candidate with
@@ -121,16 +124,38 @@ def _worth_retrying(r: "ApplicationResult") -> bool:
     timeout, a sign-in that has since become possible -- is worth another go.
     """
     if r.status in (Status.SUBMITTED.value, Status.CONFIRMED.value,
-                    Status.KNOCKOUT_FAIL.value, "skipped"):
+                    Status.KNOCKOUT_FAIL.value, "dry_run", "skipped"):
         return False
     settled = ("third-party apply", "no answerable fields",
-               "legally significant", "already applied",
+               "legally significant", "awaiting candidate", "already applied",
                # Retrying a rate limit is what caused it. Oracle answered the
                # third attempt on one posting with "Too Many Attempts. Try
                # Again Later." and locked the rest of the tenant out with it.
                "too many attempts", "try again later", "rate limit")
     blob = f"{r.reason} {' '.join(r.flagged or [])}".lower()
     return not any(s in blob for s in settled)
+
+
+# Hard ceiling for attempts_per_job=0. Twenty-five is a few hours of one
+# posting at the longest backoff; past that the problem is not transient.
+MAX_ATTEMPTS = 25
+# A form that fills but will not verify clean gets this many full passes
+# (navigate, fill, heal) before its tab is left open for the candidate. Each
+# pass is minutes of model calls; past three the fix is not going to appear.
+MAX_UNCLEAN_PASSES = 3
+# Backoff between in-tab retries: 5s, 10s, 20s, ... capped at two minutes.
+RETRY_BASE_S, RETRY_CAP_S = 5.0, 120.0
+
+_SETTLED_OK = (Status.SUBMITTED.value, Status.CONFIRMED.value, "dry_run", "skipped")
+
+
+def _attempt_budget(cfg: "RunConfig") -> int:
+    return MAX_ATTEMPTS if cfg.attempts_per_job <= 0 else cfg.attempts_per_job
+
+
+def _retry_delay(attempt: int) -> float:
+    import random
+    return min(RETRY_CAP_S, RETRY_BASE_S * 2 ** (attempt - 1)) * random.uniform(0.8, 1.2)
 
 
 # Labels that belong to a sign-in or registration form rather than to an
@@ -451,19 +476,75 @@ class Orchestrator:
                     post.job_id,
                     keep_open_on=(HaltWithTabOpen,) if self.cfg.persist_until_submitted
                     else ()) as page:
-                return await self._apply_in_tab(page, post, audit, shots)
+                r = await self._apply_with_retries(page, post, audit, shots)
+                if r.status == Status.NEEDS_HUMAN.value and not page.is_closed():
+                    # The form is filled and live. Closing it would discard
+                    # that work; leave it for the candidate to finish or fix.
+                    self.session.keep(page, f"{post.company}: {post.title}"[:80])
+                return r
         except HaltWithTabOpen:
             # Deliberate: carries the open tab up to the caller untouched.
             raise
         except Exception as exc:  # noqa: BLE001
-            tb = traceback.format_exc()[-1200:]
-            log.error("apply.crashed", job_id=post.job_id, error=str(exc)[:200])
-            (audit / "error.txt").write_text(tb, encoding="utf-8")
+            # Only reached when the tab itself could not be leased.
+            log.error("apply.no_tab", job_id=post.job_id, error=str(exc)[:200])
             self.tracker.update(post.job_id, status=Status.FAILED.value,
                                 error=str(exc)[:300])
-            return ApplicationResult(post.job_id, Status.FAILED.value, str(exc)[:200])
+            return ApplicationResult(post.job_id, Status.FAILED.value,
+                                     f"tab died: {str(exc)[:180]}")
         finally:
             await self.session.reap_orphans()
+
+    async def _apply_with_retries(self, page: Any, post: JobPost, audit: Path,
+                                  shots: Path) -> ApplicationResult:
+        """Work one application in one tab until it settles.
+
+        A crash used to close the tab and file the job as failed after a
+        single try. Most of what goes wrong mid-form is transient -- a model
+        call that 400s or times out, a menu that did not open, a navigation
+        that raced the page -- and the tab is the expensive thing. So the
+        loop stays in the tab: each attempt re-navigates and re-fills (the
+        filler verifies every write, so a half-filled form is fine), with
+        backoff between tries. It stops on a settled result, on the attempt
+        budget, or when the tab itself is gone.
+        """
+        jid = post.job_id
+        budget = _attempt_budget(self.cfg)
+        r: ApplicationResult | None = None
+        for attempt in range(1, budget + 1):
+            try:
+                r = await self._apply_in_tab(page, post, audit, shots)
+            except HaltWithTabOpen:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                tb = traceback.format_exc()[-1200:]
+                log.error("apply.crashed", job_id=jid, attempt=attempt, of=budget,
+                          error=str(exc)[:200])
+                with (audit / "error.txt").open("a", encoding="utf-8") as fh:
+                    fh.write(f"--- attempt {attempt}\n{tb}\n")
+                r = ApplicationResult(jid, Status.FAILED.value, str(exc)[:200])
+                if page.is_closed():
+                    self.tracker.update(jid, status=Status.FAILED.value,
+                                        error=str(exc)[:300])
+                    return ApplicationResult(jid, Status.FAILED.value,
+                                             f"tab died: {str(exc)[:180]}")
+            if r.status in _SETTLED_OK or not _worth_retrying(r):
+                return r
+            if r.status == Status.NEEDS_HUMAN.value and attempt >= MAX_UNCLEAN_PASSES:
+                log.warning("apply.unclean_after_passes", job_id=jid, passes=attempt)
+                break
+            if attempt >= budget:
+                break
+            delay = _retry_delay(attempt)
+            log.warning("apply.retrying_in_tab", job_id=jid, company=post.company,
+                        attempt=attempt + 1, of=budget, after=r.status,
+                        reason=r.reason[:120], in_s=round(delay))
+            self.tracker.update(jid, status=Status.FILLING.value,
+                                error=f"retry {attempt + 1}/{budget}: {r.reason[:200]}")
+            await asyncio.sleep(delay)
+        assert r is not None
+        self.tracker.update(jid, status=r.status, error=r.reason[:300])
+        return r
 
 
     async def _resume_for(self, page: Any, post: JobPost, audit: Path,
@@ -906,11 +987,14 @@ class Orchestrator:
                 log.error("apply.halted_open", job_id=jid,
                           blockers=[i.label[:60] for i in verification.blockers])
                 raise HaltWithTabOpen(jid, verification.blockers)
+            reason = "verification not clean"
             if needs_candidate:
                 log.warning("apply.awaiting_candidate", job_id=jid,
                             questions=[i.label[:60] for i in verification.blockers])
+                reason = "awaiting candidate: " + "; ".join(
+                    i.label[:40] for i in verification.blockers[:4])
             return ApplicationResult(jid, Status.NEEDS_HUMAN.value,
-                                     "verification not clean", heal_rounds=rounds,
+                                     reason, heal_rounds=rounds,
                                      flagged=[i.problem for i in verification.blockers],
                                      resume_path=str(resume_pdf), project_url=project_url)
 
@@ -1178,18 +1262,17 @@ class Orchestrator:
             # menu that did not open will open, a heal round that ran out of
             # attempts gets another form to work on. Retrying immediately costs
             # a minute; coming back to it costs a whole pass.
+            # In-tab retries live in _apply_with_retries. This outer loop only
+            # re-leases when the tab itself died (browser crash, context
+            # closed), which the in-tab loop cannot recover from.
             r = None
-            for attempt in range(1, self.cfg.attempts_per_job + 1):
+            for release in range(1, 4):
                 r = await self.apply_to(post)
-                if r.status in (Status.SUBMITTED.value, Status.CONFIRMED.value):
+                if not r.reason.startswith("tab died") or not _worth_retrying(r):
                     break
-                if not _worth_retrying(r):
-                    break
-                if attempt < self.cfg.attempts_per_job:
-                    log.info("run.retrying_job", job_id=post.job_id,
-                             company=post.company, attempt=attempt + 1,
-                             of=self.cfg.attempts_per_job, after=r.status)
-                    await asyncio.sleep(random.uniform(4.0, 9.0))
+                log.warning("run.releasing_tab", job_id=post.job_id,
+                            company=post.company, attempt=release + 1, of=3)
+                await asyncio.sleep(random.uniform(4.0, 9.0))
             results.append(r)
             if r.status in (Status.SUBMITTED.value, Status.CONFIRMED.value) and key:
                 applied_companies[key] = applied_companies.get(key, 0) + 1

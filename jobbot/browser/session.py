@@ -115,6 +115,10 @@ class BrowserSession:
         # this never showed up there. The keeper is not counted against the
         # tab budget and is never reaped.
         self._keeper: Any = None
+        # Tabs the orchestrator asked to leave standing: a filled form that
+        # needs the candidate. Released from the budget, never closed by
+        # tab()/reap_orphans(); closed only by close().
+        self._kept: dict[Any, str] = {}
 
     def _singleton_holder(self) -> int | None:
         """PID currently holding this profile, if one is alive.
@@ -240,6 +244,15 @@ class BrowserSession:
     def live_tabs(self) -> int:
         return len(self._live)
 
+    def keep(self, page: Any, label: str) -> None:
+        """Leave this tab open after its lease ends, with its work intact."""
+        self._kept[page] = label
+        log.warning("browser.tab_kept", label=label, kept=len(self._kept))
+
+    @property
+    def kept_tabs(self) -> list[str]:
+        return [lbl for pg, lbl in self._kept.items() if not pg.is_closed()]
+
     @property
     def total_pages(self) -> int:
         """Pages open in the context, not counting the keeper."""
@@ -278,11 +291,14 @@ class BrowserSession:
             # asked for the tab to stay open.
             if not keep and page is not None:
                 self._live.discard(page)
-                await self._ensure_keeper()   # never close the last window
-                with contextlib.suppress(Exception):
-                    if not page.is_closed():
-                        await page.close()
-                log.debug("browser.tab_closed", label=label, live=len(self._live))
+                if page in self._kept:
+                    log.debug("browser.tab_released_open", label=label)
+                else:
+                    await self._ensure_keeper()   # never close the last window
+                    with contextlib.suppress(Exception):
+                        if not page.is_closed():
+                            await page.close()
+                    log.debug("browser.tab_closed", label=label, live=len(self._live))
             self._sem.release()
 
     async def reap_orphans(self) -> int:
@@ -296,7 +312,7 @@ class BrowserSession:
             return 0
         killed = 0
         for p in list(self.ctx.pages):
-            if p is self._keeper:
+            if p is self._keeper or p in self._kept:
                 continue
             if p not in self._live and not p.is_closed():
                 with contextlib.suppress(Exception):

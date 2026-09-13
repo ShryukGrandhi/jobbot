@@ -225,7 +225,18 @@ def cmd_run(args) -> int:
         await session.start()
         try:
             orch = Orchestrator(profile, session, llm, tracker, cfg)
-            return await orch.run(posts, limit=args.limit)
+            results = await orch.run(posts, limit=args.limit)
+            kept = session.kept_tabs
+            if kept:
+                print(f"\n{len(kept)} application(s) left OPEN in the browser -- "
+                      "filled, not submitted, waiting on you:")
+                for k in kept:
+                    print(f"  - {k}")
+                print("\nEach needs an answer only you can give (see blockers.txt in "
+                      "its audit dir). Fill it in the tab, or set it at /edit on the "
+                      "dashboard and re-run. Ctrl-C closes the browser.")
+                await asyncio.Event().wait()
+            return results
         except HaltWithTabOpen as halt:
             print(f"\nHALTED on {halt.job_id} with the tab still open:")
             for b in halt.blockers:
@@ -359,8 +370,10 @@ def main(argv: list[str] | None = None) -> int:
                                     "(default: data/standard_resume.pdf if present)")
     r.add_argument("--tailor", action="store_true",
                    help="generate a resume per application instead of sending the standard one")
-    r.add_argument("--attempts", type=int, default=1,
-                   help="work the same application up to N times before moving on")
+    r.add_argument("--attempts", type=int, default=0,
+                   help="max tries per application, retried in the same tab "
+                        "with backoff (default 0 = keep trying until it settles, "
+                        "max 25)")
     r.add_argument("--persist", action="store_true",
                    help="work one application until it submits; on failure stop "
                         "with the tab open instead of moving on")
