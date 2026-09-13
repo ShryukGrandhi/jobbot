@@ -97,3 +97,28 @@ def test_the_filter_never_drops_a_decision(tmp_path) -> None:
     kept, dropped = q.keep_only_internships()
     assert (kept, dropped) == (2, 0)
     assert q.blacklisted_ids() == {"greenhouse:1"}
+
+
+def test_stale_postings_sink_below_fresh_ones_at_equal_fit(tmp_path):
+    """A 2021 posting at fit 0.94 must not outrank a last-week one at 0.90."""
+    from datetime import date, timedelta
+
+    from jobbot.queue import JobQueue, QueueEntry, is_stale
+
+    today = date.today()
+    q = JobQueue(tmp_path / "queue.json")
+    q._entries = {
+        "old": QueueEntry("old", company="a", fit=0.94,
+                          posted=(today - timedelta(days=900)).isoformat()),
+        "new": QueueEntry("new", company="b", fit=0.90,
+                          posted=(today - timedelta(days=6)).isoformat()),
+        "undated": QueueEntry("undated", company="c", fit=0.80, posted=""),
+        "picked": QueueEntry("picked", company="d", fit=0.10, decision="approved",
+                             posted=(today - timedelta(days=900)).isoformat()),
+    }
+    order = [e.job_id for e in q.all()]
+    assert order == ["picked", "new", "undated", "old"]
+    assert is_stale((today - timedelta(days=121)).isoformat(), today=today)
+    assert not is_stale((today - timedelta(days=119)).isoformat(), today=today)
+    assert not is_stale("", today=today)
+    assert not is_stale("not-a-date", today=today)
