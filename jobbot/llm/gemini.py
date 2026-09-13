@@ -22,6 +22,7 @@ log = structlog.get_logger(__name__)
 
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 DEFAULT_MODEL = os.environ.get("JOBBOT_GEMINI_MODEL", "gemini-2.5-pro")
+TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
 
 # Gemini's function-calling schema is a strict OpenAPI subset. These keywords
 # are silently rejected or cause a 400.
@@ -129,12 +130,22 @@ def call_gemini(
             }
         }
 
-    r = httpx.post(
-        ENDPOINT.format(model=model),
-        params={"key": key},
-        json=body,
-        timeout=timeout,
-    )
+    from jobbot.llm.client import TransientLLMError   # lazy: client imports us lazily too
+
+    try:
+        r = httpx.post(
+            ENDPOINT.format(model=model),
+            params={"key": key},
+            json=body,
+            timeout=timeout,
+        )
+    except (httpx.TimeoutException, httpx.NetworkError) as exc:
+        raise TransientLLMError(f"gemini network: {exc}") from exc
+    if r.status_code in TRANSIENT_STATUS:
+        # 503 "high demand", 429, 5xx: the call is retried with backoff by the
+        # client's policy. Raising a plain error here cost a live run its
+        # fully filled form at checkpoint 2.
+        raise TransientLLMError(f"gemini {r.status_code}: {r.text[:400]}")
     if r.status_code != 200:
         raise RuntimeError(f"gemini {r.status_code}: {r.text[:400]}")
     data = r.json()

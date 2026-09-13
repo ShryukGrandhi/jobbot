@@ -801,7 +801,8 @@ def test_an_application_is_retried_in_its_own_tab_until_it_settles(tmp_path, mon
     orch.tracker = Tracker()
     audit = tmp_path / "a"; audit.mkdir()
 
-    script = [RuntimeError("gemini 400"), RuntimeError("Timeout 60000ms exceeded"),
+    script = [RuntimeError("gemini 503: high demand, please try again later"),
+              RuntimeError("Timeout 60000ms exceeded"),
               ApplicationResult("gh:1", Status.FAILED.value, "2 required fields unhealed"),
               ApplicationResult("gh:1", "dry_run", "verified but not submitted")]
     calls = []

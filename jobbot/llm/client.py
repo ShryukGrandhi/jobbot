@@ -277,7 +277,7 @@ class LLMClient:
     @retry(
         retry=retry_if_exception_type(TransientLLMError),
         wait=wait_exponential(multiplier=3, min=3, max=120),
-        stop=stop_after_attempt(5),
+        stop=stop_after_attempt(8),   # ~5 min of backoff; a 503 storm outlasts 5 tries
         reraise=True,
     )
     def call(

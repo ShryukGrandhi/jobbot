@@ -512,6 +512,7 @@ class Orchestrator:
         budget = _attempt_budget(self.cfg)
         r: ApplicationResult | None = None
         for attempt in range(1, budget + 1):
+            crashed = False
             try:
                 r = await self._apply_in_tab(page, post, audit, shots)
             except HaltWithTabOpen:
@@ -523,12 +524,17 @@ class Orchestrator:
                 with (audit / "error.txt").open("a", encoding="utf-8") as fh:
                     fh.write(f"--- attempt {attempt}\n{tb}\n")
                 r = ApplicationResult(jid, Status.FAILED.value, str(exc)[:200])
+                crashed = True
                 if page.is_closed():
                     self.tracker.update(jid, status=Status.FAILED.value,
                                         error=str(exc)[:300])
                     return ApplicationResult(jid, Status.FAILED.value,
                                              f"tab died: {str(exc)[:180]}")
-            if r.status in _SETTLED_OK or not _worth_retrying(r):
+            # An exception is transient by construction (a 503, a timeout, a
+            # menu race) and is always retried; _worth_retrying reads the
+            # *reason* text, and a Gemini 503 body says "try again later" --
+            # the exact phrase that marks Oracle's lockout page as settled.
+            if not crashed and (r.status in _SETTLED_OK or not _worth_retrying(r)):
                 return r
             if r.status == Status.NEEDS_HUMAN.value and attempt >= MAX_UNCLEAN_PASSES:
                 log.warning("apply.unclean_after_passes", job_id=jid, passes=attempt)
