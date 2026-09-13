@@ -27,6 +27,8 @@ DEFAULT_MODEL = os.environ.get("JOBBOT_GEMINI_MODEL", "gemini-2.5-pro")
 # are silently rejected or cause a 400.
 _DROP_KEYS = {"additionalProperties", "$schema", "default", "examples",
               "minimum", "maximum", "minItems", "maxItems", "title"}
+# Dict-valued keywords whose keys are user property names, never keywords.
+_PROPERTY_MAPS = {"properties", "$defs", "definitions"}
 
 
 def sanitize_schema(node: Any) -> Any:
@@ -43,6 +45,12 @@ def sanitize_schema(node: Any) -> Any:
 
     out: dict[str, Any] = {}
     for k, v in node.items():
+        if k in _PROPERTY_MAPS and isinstance(v, dict):
+            # The keys here are property NAMES, not schema keywords. A field
+            # called "title" or "default" must survive, or `required` ends up
+            # naming a property that no longer exists and Gemini returns 400.
+            out[k] = {name: sanitize_schema(sub) for name, sub in v.items()}
+            continue
         if k in _DROP_KEYS:
             continue
         if k == "type" and isinstance(v, list):
