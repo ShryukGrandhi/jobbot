@@ -1,11 +1,12 @@
 """Which backend errors are worth retrying.
-import pytest
 
 Both guards below fail on the unfixed classifier, and neither failure is
 visible at runtime: the run keeps going, on the wrong backend or not at all.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from jobbot.llm.client import _is_quota_exhausted, _is_transient
 
@@ -100,3 +101,21 @@ def test_gemini_503_is_transient_and_retried_not_fatal(monkeypatch):
     monkeypatch.setattr(httpx, "post", boom)
     with pytest.raises(TransientLLMError):
         gemini.call_gemini(system="s", blocks=[{"type": "text", "text": "x"}], tool=None, max_tokens=10)
+
+
+def test_gemini_prose_instead_of_tool_call_is_retried(monkeypatch):
+    """A forced tool call answered with empty prose is a blip, not a crash."""
+    from jobbot.llm import client as mod
+    from jobbot.llm import gemini
+
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setattr(gemini, "call_gemini", lambda **kw: {
+        "text": "", "tool_input": None, "model": "gemini-2.5-pro",
+        "input_tokens": 1, "output_tokens": 0})
+    c = mod.LLMClient(provider="gemini")
+    with pytest.raises(mod.TransientLLMError):
+        c._call_fallback(None, [{"type": "text", "text": "x"}], {"name": "parse"}, 100)
+
+    # prose was what we asked for: no tool, no error
+    out = c._call_fallback(None, [{"type": "text", "text": "x"}], None, 100)
+    assert out.tool_input is None

@@ -899,3 +899,30 @@ def test_healer_reapplies_profile_values_and_snaps_declines(monkeypatch, tmp_pat
     assert by["arb"].value not in (None, "", False)
     assert by["g"].value == "Decline To Self Identify"
     assert {a.field_id for a in answers} == {"arb", "g"}, "healed values reach the ledger"
+
+
+def test_a_confirmed_yes_ticks_a_lone_consent_checkbox() -> None:
+    """Greenhouse's arbitration agreement is one checkbox whose only option is
+    the sentence "Please read the arbitration agreement below". The profile's
+    confirmed "Yes" matched none of that text, so a live run filed it as
+    "needs human" -- twice per pass -- and could never verify clean.
+    """
+    from jobbot.forms.model import FieldKind, FieldOption, FormField, ParsedForm
+    from jobbot.healer.answer import deterministic_answers
+    from jobbot.profile import Profile
+
+    prof = Profile.model_validate({
+        "identity": {"first_name": "J", "last_name": "D", "email": "j@d.com"},
+        "screening": {"arbitration_agreement": "Yes", "policy_acknowledgement": False},
+    })
+    arb = FormField("a", "Please read the arbitration agreement below", FieldKind.CHECKBOX,
+                    required=True, options=[FieldOption("Please read the arbitration agreement below")])
+    arb2 = FormField("b", "Agreement to Arbitrate", FieldKind.CONSENT, required=True)
+    pol = FormField("c", "I acknowledge the AI policy", FieldKind.CHECKBOX,
+                    options=[FieldOption("I acknowledge the AI policy")])
+    answers, leftover = deterministic_answers(prof, ParsedForm(fields=[arb, arb2, pol]))
+    by = {a.field_id: a for a in answers}
+    assert by["a"].value is True and by["a"].submittable
+    assert by["b"].value is True and by["b"].submittable
+    assert by["c"].value is False, "a confirmed No leaves the box alone"
+    assert leftover == []

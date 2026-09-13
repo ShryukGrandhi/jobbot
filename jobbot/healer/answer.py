@@ -156,6 +156,16 @@ def _sponsorship_prose(profile: Profile, needs: bool, label: str = "") -> str:
     return out
 
 
+_TRUTHY = {"yes", "y", "true", "agree", "i agree", "accept", "i accept",
+           "acknowledge", "acknowledged", "i acknowledge", "confirm", "confirmed"}
+
+
+def _truthy(v: object) -> bool:
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower().rstrip(".") in _TRUTHY
+
+
 def real_options(field: FormField) -> list[str]:
     """The field's option labels, minus placeholders -- possibly nothing.
 
@@ -403,6 +413,18 @@ def deterministic_answers(
                     and key.startswith("requires_sponsorship") \
                     and _asks_more_than_yes_no(f.label):
                 v = _sponsorship_prose(profile, v, f.label)
+            if f.kind in (FieldKind.CHECKBOX, FieldKind.CONSENT) and len(opts) <= 1:
+                # A lone consent box ("Agreement to Arbitrate", "I acknowledge
+                # the policy"): its one option is the sentence itself, so a
+                # confirmed "Yes" matches nothing by text. The candidate
+                # confirmed the answer; a truthy value ticks the box, a falsy
+                # one leaves it alone.
+                tick = _truthy(v)
+                answers.append(ProposedAnswer(
+                    f.field_id, tick, AnswerSource.PROFILE, 1.0,
+                    f"confirmed profile.screening.{key}: "
+                    f"{'tick' if tick else 'leave unticked'}"))
+                continue
             if opts:
                 chosen = match_boolean(v, opts) if isinstance(v, bool) else None
                 if chosen is None:

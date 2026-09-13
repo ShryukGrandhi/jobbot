@@ -374,6 +374,14 @@ class LLMClient:
         from jobbot.llm.gemini import call_gemini
 
         res = call_gemini(system=system, blocks=blocks, tool=tool, max_tokens=max_tokens)
+        if tool is not None and res.get("tool_input") is None:
+            # A forced tool call that came back as prose (or nothing) is a
+            # blip -- Gemini does this on a fraction of vision requests --
+            # and a re-ask costs seconds, whereas surfacing it cost a live
+            # run a full navigate-and-refill pass.
+            raise TransientLLMError(
+                f"gemini returned no tool call for {tool.get('name')}; "
+                f"text was: {str(res.get('text', ''))[:200]!r}")
         log.info("llm.fallback_used", model=res["model"])
         return LLMResponse(
             text=res["text"], tool_input=res["tool_input"], thinking="",
