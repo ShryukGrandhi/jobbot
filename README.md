@@ -110,6 +110,23 @@ uv run jobbot dashboard       # opens http://127.0.0.1:8765
 `.env` needs one LLM key. `ANTHROPIC_API_KEY` is the supported path;
 `JOBBOT_LLM_PROVIDER=gemini` with `GEMINI_API_KEY` also works end to end.
 
+### The UI: one screen, with the browser inside it
+
+```bash
+uv run jobbot ui          # http://127.0.0.1:8766
+```
+
+![jobbot ui](docs/img/ui-live.jpg)
+
+Left: queue, answers ledger, intake wizard, profile editor, status. Right: a
+**live browser** -- the same persistent, logged-in Chromium jobbot applies
+with, streamed into the page over CDP. Click into it, type, scroll, paste,
+sign in to Workday or Greenhouse or Gmail; the cookies survive for every
+later run. Runs start from the pane (sources, limit, approved-only, and a
+SUBMIT switch behind a confirm) and execute in-process on that same
+session, so **the tab you watch is the tab it fills**. `jobbot dashboard`
+still serves the classic read-only views, also reachable at `/classic`.
+
 ### Onboarding: build the profile from a dump
 
 Open **intake** on the dashboard. Drop one or more resume PDFs, paste a
@@ -161,7 +178,8 @@ Full detail: [docs/SETUP.md](docs/SETUP.md).
 
 ```
 jobbot check                    readiness: profile, llm, github, gmail, tracker
-jobbot dashboard                local web UI: overview, queue, answers, intake, editor
+jobbot ui                       the UI: queue, intake, editor, answers, and a live browser
+jobbot dashboard                classic read-only web views
 jobbot discover --source ...    find and rank jobs, fill the queue, no browser
 jobbot run --source ... [--approved] [--submit] [--persist] [--keep-open]
 jobbot report <audit-dir>       every answer entered, field by field
@@ -195,6 +213,7 @@ uv run pytest -q
 | `tests/test_intake.py` | Dump → cards → patches: the model's proposal is applied field by field and never touches the screening block. |
 | `tests/test_editor.py` | Profile form round-trips through YAML losslessly; validation rejects bad state. |
 | `tests/test_queue.py` | Blacklist survives re-discovery; approved outranks fit; applied stops re-offering. |
+| `tests/test_ui.py` | The UI server's routes answer, the live-frame endpoint returns 204 until a new frame exists and never re-sends one, input and run requests reach the browser layer. |
 
 ### CI on three operating systems
 
