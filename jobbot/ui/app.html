@@ -369,21 +369,25 @@ $('#b-go').onclick=()=>post('/api/live/navigate',{url:$('#b-url').value});
 $('#b-url').onkeydown=e=>{if(e.key==='Enter')$('#b-go').click()};
 $('#b-new').onclick=()=>post('/api/live/tab',{url:'about:blank'});
 
-/* input forwarding: fractions of the frame, so the window can be any size */
+/* input forwarding: fractions of the frame, so the window can be any size.
+   Events are chained so keystrokes arrive in order -- parallel POSTs raced
+   and "software" landed as "softawre". */
+let chain=Promise.resolve();
+const send=ev=>{chain=chain.then(()=>post('/api/live/input',ev)).catch(()=>{});return chain};
 const view=$('#b-view'), img=$('#b-img');
 function frac(e){const r=img.getBoundingClientRect();return{fx:(e.clientX-r.left)/r.width,fy:(e.clientY-r.top)/r.height}}
-img.addEventListener('click',e=>{view.focus();post('/api/live/input',{type:'click',...frac(e)})});
-img.addEventListener('dblclick',e=>post('/api/live/input',{type:'dblclick',...frac(e)}));
-img.addEventListener('wheel',e=>{e.preventDefault();post('/api/live/input',{type:'wheel',...frac(e),dx:e.deltaX,dy:e.deltaY})},{passive:false});
-let mv=0; img.addEventListener('mousemove',e=>{const t=Date.now();if(t-mv>120){mv=t;post('/api/live/input',{type:'move',...frac(e)})}});
+img.addEventListener('click',e=>{view.focus();send({type:'click',...frac(e)})});
+img.addEventListener('dblclick',e=>send({type:'dblclick',...frac(e)}));
+img.addEventListener('wheel',e=>{e.preventDefault();send({type:'wheel',...frac(e),dx:e.deltaX,dy:e.deltaY})},{passive:false});
+let mv=0; img.addEventListener('mousemove',e=>{const t=Date.now();if(t-mv>120){mv=t;send({type:'move',...frac(e)})}});
 view.addEventListener('keydown',e=>{
   if(e.key==='Escape'){view.blur();return}
   const mods=(e.altKey?1:0)|(e.ctrlKey?2:0)|(e.metaKey?4:0)|(e.shiftKey?8:0);
-  if(e.key.length===1&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();post('/api/live/input',{type:'text',text:e.key});return}
+  if(e.key.length===1&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();send({type:'text',text:e.key});return}
   if(['Enter','Tab','Backspace','Delete','Escape','ArrowLeft','ArrowUp','ArrowRight','ArrowDown','Home','End','PageUp','PageDown'].includes(e.key)||e.ctrlKey||e.metaKey){
-    e.preventDefault();post('/api/live/input',{type:'key',key:e.key,code:e.code,modifiers:mods})}
+    e.preventDefault();send({type:'key',key:e.key,code:e.code,modifiers:mods})}
 });
-view.addEventListener('paste',e=>{const t=e.clipboardData.getData('text');if(t){e.preventDefault();post('/api/live/input',{type:'text',text:t})}});
+view.addEventListener('paste',e=>{const t=e.clipboardData.getData('text');if(t){e.preventDefault();send({type:'text',text:t})}});
 
 /* ---------- run ---------- */
 $('#r-go').onclick=async()=>{
