@@ -1,0 +1,26 @@
+# Secrets and personal data. Never commit these.
+.env
+config/profile.yaml
+config/*.local.yaml
+# Editor backups: `config/profile.<timestamp>.yaml`, same personal data as the
+# original. Broad on purpose -- only the example file is meant to be tracked.
+config/*.yaml
+!config/profile.example.yaml
+credentials.json
+token.json
+*_client_secret.json
+
+# Your application history, resumes, and screenshots of forms you filled.
+data/*
+!data/.gitkeep
+.profiles/
+
+# Build / runtime
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.DS_Store

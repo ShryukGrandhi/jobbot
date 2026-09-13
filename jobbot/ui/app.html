@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jobbot</title>
+<style>
+:root{
+  --bg:#0a0a0a;--panel:#101010;--panel2:#161616;--line:#262626;--line2:#3a3a3a;
+  --fg:#f2f2f2;--dim:#8a8a8a;--dim2:#b3b3b3;
+  --acc:#ff5a1f;--acc-ink:#0a0a0a;--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444;
+  --sans:Inter,"SF Pro Text",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:14px/1.45 var(--sans)}
+a{color:var(--fg)}
+button,input,select,textarea{font:inherit;color:inherit}
+::selection{background:var(--acc);color:var(--acc-ink)}
+
+/* ---- frame: 3 columns, hairlines, no rounded fluff ---- */
+.app{display:grid;grid-template-columns:232px minmax(420px,1fr) minmax(560px,1.35fr);
+  grid-template-rows:56px 1fr;height:100vh}
+header{grid-column:1/-1;display:flex;align-items:center;gap:22px;padding:0 20px;
+  border-bottom:1px solid var(--line);background:var(--bg)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:.06em;
+  text-transform:uppercase;font-size:15px}
+.brand i{width:12px;height:12px;background:var(--acc);display:inline-block}
+header nav{display:flex;gap:4px;margin-left:8px}
+header nav a{text-decoration:none;color:var(--dim2);padding:8px 12px;border-bottom:2px solid transparent;
+  font-weight:600}
+header nav a.on{color:var(--fg);border-bottom-color:var(--acc)}
+header nav a:hover{color:var(--fg)}
+.hstat{margin-left:auto;display:flex;gap:18px;align-items:center;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.hstat b{color:var(--fg)}
+.dot{width:8px;height:8px;display:inline-block;background:var(--dim);margin-right:6px;vertical-align:middle}
+.dot.up{background:var(--ok)}.dot.run{background:var(--acc);animation:blink 1s steps(2) infinite}
+@keyframes blink{to{opacity:.35}}
+
+aside{border-right:1px solid var(--line);padding:18px 0;overflow:auto;background:var(--bg)}
+.side-h{font:600 11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+  padding:14px 20px 8px}
+.side-a{display:block;padding:8px 20px;text-decoration:none;color:var(--dim2);border-left:2px solid transparent}
+.side-a.on{color:var(--fg);border-left-color:var(--acc);background:var(--panel)}
+.side-a:hover{color:var(--fg)}
+.side-k{display:flex;justify-content:space-between;padding:6px 20px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+.side-k b{color:var(--fg);font-weight:600}
+
+main{overflow:auto;background:var(--bg)}
+section.view{display:none;min-height:100%}
+section.view.on{display:block}
+.pad{padding:22px 24px}
+h1{margin:0 0 4px;font-size:22px;letter-spacing:-.01em;font-weight:800}
+.sub{color:var(--dim);margin:0 0 18px}
+
+/* tiles: uppercase mono label, huge number, orange money */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border:1px solid var(--line);
+  background:var(--line);gap:1px;margin-bottom:22px}
+.tile{background:var(--panel);padding:16px 18px}
+.tile .l{font:600 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:10px}
+.tile .n{font:700 28px/1 var(--mono);letter-spacing:-.02em}
+.tile .n.acc{color:var(--acc)}
+.tile .n.ok{color:var(--ok)}.tile .n.warn{color:var(--warn)}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{font:600 10.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
+  text-align:left;padding:10px 10px;border-bottom:1px solid var(--line)}
+td{padding:10px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:hover td{background:var(--panel)}
+.mono{font-family:var(--mono);font-size:12px}
+.pill{display:inline-block;padding:2px 7px;font:600 10.5px/1.4 var(--mono);letter-spacing:.06em;text-transform:uppercase;
+  border:1px solid var(--line2);color:var(--dim2)}
+.pill.approved{border-color:var(--ok);color:var(--ok)}
+.pill.blacklist{border-color:var(--bad);color:var(--bad)}
+.pill.applied,.pill.submitted,.pill.confirmed{border-color:var(--acc);color:var(--acc)}
+.pill.needs_human{border-color:var(--warn);color:var(--warn)}
+.bar{height:4px;background:var(--line);width:90px;display:inline-block;vertical-align:middle;margin-right:8px}
+.bar i{display:block;height:100%;background:var(--acc)}
+
+/* controls: hard edges, orange primary with black ink */
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{background:var(--panel2);border:1px solid var(--line2);padding:8px 13px;cursor:pointer;font-weight:600;
+  border-radius:2px;line-height:1}
+.btn:hover{border-color:var(--fg)}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
+.btn.primary:hover{background:#ff7a47}
+.btn.danger{border-color:var(--bad);color:var(--bad)}
+.btn.small{padding:5px 9px;font-size:12px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.in{background:#0d0d0d;border:1px solid var(--line2);padding:8px 10px;border-radius:2px;min-width:0}
+.in:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 2px rgba(255,90,31,.25)}
+.in.grow{flex:1}
+label.chk{display:inline-flex;gap:7px;align-items:center;color:var(--dim2);cursor:pointer}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:14px}
+.tabs a{padding:8px 12px;text-decoration:none;color:var(--dim2);font-family:var(--mono);font-size:12px;
+  border-bottom:2px solid transparent;cursor:pointer}
+.tabs a.on{color:var(--fg);border-bottom-color:var(--acc)}
+.empty{border:1px dashed var(--line2);padding:22px;color:var(--dim);text-align:center;font-family:var(--mono);font-size:12px}
+iframe.mount{width:100%;height:calc(100vh - 56px);border:0;background:var(--bg);display:block}
+
+/* ---- the browser pane ---- */
+.bp{border-left:1px solid var(--line);display:grid;grid-template-rows:auto auto 1fr auto;min-height:0;background:#050505}
+.bp-top{display:flex;gap:6px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--bg)}
+.bp-top .url{flex:1;font-family:var(--mono);font-size:12px}
+.bp-tabs{display:flex;gap:1px;background:var(--line);border-bottom:1px solid var(--line);overflow:auto}
+.bp-tab{background:var(--bg);padding:6px 12px;font:12px var(--mono);color:var(--dim);white-space:nowrap;
+  cursor:pointer;max-width:240px;overflow:hidden;text-overflow:ellipsis;border-top:2px solid transparent}
+.bp-tab.on{color:var(--fg);border-top-color:var(--acc)}
+.bp-view{position:relative;min-height:0;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;
+  background:#050505;outline:none}
+.bp-view:focus{box-shadow:inset 0 0 0 2px var(--acc)}
+.bp-view img{display:block;max-width:100%;max-height:100%;width:100%;height:auto;image-rendering:auto;user-select:none;-webkit-user-drag:none}
+.bp-off{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;
+  color:var(--dim);font-family:var(--mono);font-size:12px;text-align:center;padding:30px}
+.bp-off b{color:var(--fg);font:800 22px/1.1 var(--sans);letter-spacing:-.01em}
+.bp-bot{border-top:1px solid var(--line);background:var(--bg)}
+.run{display:grid;grid-template-columns:1fr auto;gap:0;border-bottom:1px solid var(--line)}
+.run-f{padding:10px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.run-f .l{font:600 10.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-right:2px}
+.log{height:132px;overflow:auto;padding:8px 12px;font:11.5px/1.5 var(--mono);color:var(--dim2);white-space:pre-wrap}
+.log .e{color:var(--bad)}
+.hint{font:11px var(--mono);color:var(--dim);padding:6px 12px;border-top:1px solid var(--line)}
+kbd{border:1px solid var(--line2);padding:0 5px;font:11px var(--mono);color:var(--dim2)}
+@media (max-width:1180px){.app{grid-template-columns:200px 1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><i></i>jobbot</div>
+    <nav id="nav">
+      <a href="#overview" data-v="overview">Overview</a>
+      <a href="#queue" data-v="queue">Queue</a>
+      <a href="#answers" data-v="answers">Answers</a>
+      <a href="#intake" data-v="intake">Intake</a>
+      <a href="#profile" data-v="profile">Profile</a>
+      <a href="#status" data-v="status">Status</a>
+    </nav>
+    <div class="hstat">
+      <span><i class="dot" id="dot-browser"></i>browser <b id="h-browser">down</b></span>
+      <span><i class="dot" id="dot-run"></i>run <b id="h-run">idle</b></span>
+      <span>llm <b id="h-llm">?</b></span>
+    </div>
+  </header>
+
+  <aside>
+    <div class="side-h">Pipeline</div>
+    <div class="side-k"><span>postings</span><b id="k-post">0</b></div>
+    <div class="side-k"><span>approved</span><b id="k-appr">0</b></div>
+    <div class="side-k"><span>submitted</span><b id="k-sub">0</b></div>
+    <div class="side-k"><span>confirmed</span><b id="k-conf">0</b></div>
+    <div class="side-k"><span>needs you</span><b id="k-need">0</b></div>
+    <div class="side-h">Ledger</div>
+    <div class="side-k"><span>answers logged</span><b id="k-ans">0</b></div>
+    <div class="side-k"><span>left blank</span><b id="k-blank">0</b></div>
+    <div class="side-h">Go</div>
+    <a class="side-a" href="#overview">Overview</a>
+    <a class="side-a" href="#queue">Queue</a>
+    <a class="side-a" href="#answers">Answers</a>
+    <a class="side-a" href="#intake">Intake wizard</a>
+    <a class="side-a" href="#profile">Profile editor</a>
+    <a class="side-a" href="#status">Status</a>
+    <a class="side-a" href="/classic" target="_blank">Classic dashboard ↗</a>
+  </aside>
+
+  <main>
+    <section class="view" id="v-overview"><div class="pad">
+      <h1>Overview</h1><p class="sub">Every posting this machine has touched, and what happened.</p>
+      <div class="tiles" id="tiles"></div>
+      <div id="apps"></div>
+    </div></section>
+
+    <section class="view" id="v-queue"><div class="pad">
+      <h1>Queue</h1><p class="sub">Tick what to apply to. Blacklist what you are doing yourself. Nothing is applied to without a tick.</p>
+      <div class="tabs" id="q-tabs">
+        <a data-show="all" class="on">all</a><a data-show="pending">pending</a><a data-show="approved">approved</a>
+        <a data-show="blacklist">blacklist</a><a data-show="applied">applied</a>
+      </div>
+      <div class="row" style="margin-bottom:12px">
+        <input class="in grow" id="q-search" placeholder="search company or title">
+        <button class="btn small" id="q-all">select all</button>
+        <button class="btn small" id="q-none">clear</button>
+        <button class="btn small primary" id="q-approve">apply to selected</button>
+        <button class="btn small danger" id="q-black">I'll do these myself</button>
+        <button class="btn small" id="q-undo">un-decide</button>
+        <span class="mono" id="q-n" style="color:var(--dim)"></span>
+      </div>
+      <div id="q-table"></div>
+    </div></section>
+
+    <section class="view" id="v-answers"><div class="pad">
+      <h1>Answers</h1><p class="sub">Every statement made in your name, with its source and confidence.</p>
+      <div class="tabs"><a id="a-all" class="on">all</a><a id="a-blank">left blank</a></div>
+      <div id="a-table"></div>
+    </div></section>
+
+    <section class="view" id="v-intake"><iframe class="mount" data-src="/intake"></iframe></section>
+    <section class="view" id="v-profile"><iframe class="mount" data-src="/edit"></iframe></section>
+
+    <section class="view" id="v-status"><div class="pad">
+      <h1>Status</h1><p class="sub">What is configured, what is missing.</p>
+      <div id="s-table"></div>
+    </div></section>
+  </main>
+
+  <div class="bp">
+    <div class="bp-top">
+      <button class="btn small" id="b-start">start browser</button>
+      <input class="in url" id="b-url" placeholder="https://  — sign in anywhere; the session persists" spellcheck="false">
+      <button class="btn small" id="b-go">go</button>
+      <button class="btn small" id="b-new">+ tab</button>
+    </div>
+    <div class="bp-tabs" id="b-tabs"></div>
+    <div class="bp-view" id="b-view" tabindex="0">
+      <img id="b-img" alt="" draggable="false" hidden>
+      <div class="bp-off" id="b-off">
+        <b>Live browser</b>
+        <span>One persistent, logged-in Chromium. jobbot fills forms in it; you can click, type and sign in here.<br>
+        Cookies survive between runs, so a Workday or Greenhouse login done once is done for good.</span>
+        <button class="btn primary" id="b-start2">start browser</button>
+      </div>
+    </div>
+    <div class="bp-bot">
+      <div class="run">
+        <div class="run-f">
+          <span class="l">Run</span>
+          <input class="in grow" id="r-src" placeholder="greenhouse:anthropic  ashby:openai  lever:palantir" spellcheck="false">
+          <input class="in" id="r-limit" type="number" min="1" max="50" value="1" style="width:64px" title="limit">
+          <label class="chk"><input type="checkbox" id="r-appr" checked> approved only</label>
+          <label class="chk" title="Sends real applications. Off = dry run."><input type="checkbox" id="r-submit"> SUBMIT</label>
+          <button class="btn primary" id="r-go">start run</button>
+        </div>
+      </div>
+      <div class="log" id="r-log">idle</div>
+      <div class="hint">click to focus the pane · type to send keys · scroll to scroll · <kbd>Esc</kbd> releases focus</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const j=async(u,o)=>{const r=await fetch(u,o);return r.json()};
+const post=(u,b)=>j(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});
+
+/* ---------- views ---------- */
+function show(v){
+  $$('section.view').forEach(s=>s.classList.toggle('on',s.id==='v-'+v));
+  $$('#nav a, .side-a').forEach(a=>a.classList.toggle('on',a.dataset.v===v||a.getAttribute('href')==='#'+v));
+  const fr=$('#v-'+v+' iframe.mount'); if(fr&&!fr.src) fr.src=fr.dataset.src;
+  ({overview:loadOverview,queue:loadQueue,answers:loadAnswers,status:loadStatus})[v]?.();
+}
+window.addEventListener('hashchange',()=>show(location.hash.slice(1)||'overview'));
+
+/* ---------- overview ---------- */
+async function loadOverview(){
+  const apps=await j('/api/applications'), ans=await j('/api/answers');
+  const c=k=>apps.filter(a=>a.status===k).length;
+  const blanks=ans.filter(a=>String(a.left_blank).toLowerCase()==='true').length;
+  const fits=apps.map(a=>+a.match_score||0).filter(x=>x>0);
+  const avg=fits.length?(fits.reduce((a,b)=>a+b,0)/fits.length).toFixed(2):'—';
+  $('#tiles').innerHTML=[
+    ['postings',apps.length,''],['submitted',c('submitted'),'acc'],['confirmed',c('confirmed'),'ok'],
+    ['needs you',c('needs_human'),'warn'],['knockout',c('knockout_fail'),''],['unreachable',c('unreachable'),''],
+    ['answers logged',ans.length,''],['left blank',blanks,''],['avg fit',avg,'acc']
+  ].map(([l,n,k])=>`<div class="tile"><div class="l">${l}</div><div class="n ${k}">${n}</div></div>`).join('');
+  $('#k-post').textContent=apps.length;$('#k-sub').textContent=c('submitted');$('#k-conf').textContent=c('confirmed');
+  $('#k-need').textContent=c('needs_human');$('#k-ans').textContent=ans.length;$('#k-blank').textContent=blanks;
+  const rank={confirmed:0,submitted:1,needs_human:2,prepared:3,filling:4,failed:5,unreachable:6,knockout_fail:7,discovered:8,filtered_out:9};
+  const rows=apps.filter(a=>a.status!=='filtered_out').sort((a,b)=>(rank[a.status]??9)-(rank[b.status]??9)).slice(0,120);
+  $('#apps').innerHTML=rows.length?`<table><thead><tr><th>company</th><th>title</th><th>ats</th><th>status</th><th>fit</th><th>q</th><th>heal</th><th>audit</th></tr></thead><tbody>${
+    rows.map(a=>`<tr><td><b>${esc(a.company)}</b></td><td><a href="${esc(a.job_url)}" target="_blank">${esc(a.title)}</a></td>
+    <td class="mono">${esc(a.ats)}</td><td><span class="pill ${esc(a.status)}">${esc(a.status).replace('_',' ')}</span></td>
+    <td class="mono">${fit(a.match_score)}</td><td class="mono">${esc(a.questions_answered||'')}/${esc(a.questions_total||'')}</td>
+    <td class="mono">${esc(a.heal_rounds||'')}</td><td class="mono">${a.audit_dir?`<a href="/app/${esc(a.audit_dir.split(/[\\/]/).pop())}" target="_blank">open</a>`:''}</td></tr>`).join('')}</tbody></table>`
+    :`<div class="empty">nothing yet — discover jobs, tick them in the queue, start a run</div>`;
+}
+const fit=v=>{const f=+v||0;return f?`<span class="bar"><i style="width:${Math.round(f*100)}%"></i></span>${f.toFixed(2)}`:'—'};
+
+/* ---------- queue ---------- */
+let qShow='all', qSel=new Set();
+async function loadQueue(){
+  const q=await j(`/api/queue.json?show=${qShow}&q=${encodeURIComponent($('#q-search').value)}`);
+  $('#k-appr').textContent=q.counts.approved;
+  $$('#q-tabs a').forEach(a=>{a.classList.toggle('on',a.dataset.show===qShow);a.textContent=`${a.dataset.show} (${a.dataset.show==='all'?Object.values(q.counts).reduce((x,y)=>x+y,0):q.counts[a.dataset.show]||0})`});
+  $('#q-n').textContent=`showing ${q.rows.length} of ${q.total}`;
+  $('#q-table').innerHTML=q.rows.length?`<table><thead><tr><th></th><th>company</th><th>title / term</th><th>location</th><th>posted</th><th>fit</th><th>ats</th><th>decision</th></tr></thead><tbody>${
+    q.rows.map(e=>`<tr><td><input type="checkbox" data-id="${esc(e.job_id)}" ${qSel.has(e.job_id)?'checked':''}></td>
+    <td><b>${esc(e.company)}</b><div class="mono" style="color:var(--dim)">${esc(e.department||'')}</div></td>
+    <td><a href="${esc(e.url)}" target="_blank">${esc(e.title)}</a>${e.term?`<div class="mono" style="color:var(--dim)">${esc(e.term)}</div>`:''}</td>
+    <td class="mono">${esc(e.location)}${e.remote?' <span class="pill">remote</span>':''}</td>
+    <td class="mono">${esc(e.posted||'—')}</td><td class="mono">${fit(e.fit)}</td><td class="mono">${esc(e.ats)}</td>
+    <td><span class="pill ${esc(e.decision)}">${esc(e.decision)}</span></td></tr>`).join('')}</tbody></table>`
+    :`<div class="empty">nothing here — run a discovery (jobbot discover --source greenhouse:slug) or start a run</div>`;
+  $$('#q-table input[type=checkbox]').forEach(cb=>cb.onchange=()=>cb.checked?qSel.add(cb.dataset.id):qSel.delete(cb.dataset.id));
+}
+$$('#q-tabs a').forEach(a=>a.onclick=()=>{qShow=a.dataset.show;loadQueue()});
+$('#q-search').oninput=()=>{clearTimeout(window._qt);window._qt=setTimeout(loadQueue,250)};
+$('#q-all').onclick=()=>{$$('#q-table input[type=checkbox]').forEach(cb=>{cb.checked=true;qSel.add(cb.dataset.id)})};
+$('#q-none').onclick=()=>{qSel.clear();loadQueue()};
+async function decide(d){if(!qSel.size)return;const decisions={};qSel.forEach(id=>decisions[id]=d);
+  await post('/api/queue',{decisions});qSel.clear();loadQueue();loadOverview()}
+$('#q-approve').onclick=()=>decide('approved');$('#q-black').onclick=()=>decide('blacklist');$('#q-undo').onclick=()=>decide('pending');
+
+/* ---------- answers ---------- */
+let aBlank=false;
+async function loadAnswers(){
+  let rows=await j('/api/answers'); if(aBlank) rows=rows.filter(a=>String(a.left_blank).toLowerCase()==='true');
+  $('#a-all').classList.toggle('on',!aBlank);$('#a-blank').classList.toggle('on',aBlank);
+  rows=rows.slice(-400).reverse();
+  $('#a-table').innerHTML=rows.length?`<table><thead><tr><th>company</th><th>field</th><th>answer</th><th>source</th><th>conf</th><th>why blank</th></tr></thead><tbody>${
+    rows.map(a=>`<tr><td><b>${esc(a.company)}</b><div class="mono" style="color:var(--dim)">${esc(a.title).slice(0,40)}</div></td>
+    <td>${esc(a.field_label)}<div class="mono" style="color:var(--dim)">${esc(a.field_kind)}${String(a.required)==='True'?' · required':''}</div></td>
+    <td style="max-width:340px">${esc(a.answer).slice(0,240)}</td><td class="mono">${esc(a.source)}</td><td class="mono">${esc(a.confidence)}</td>
+    <td class="mono" style="color:var(--warn)">${esc(a.blank_reason)}</td></tr>`).join('')}</tbody></table>`
+    :`<div class="empty">no answers recorded yet</div>`;
+}
+$('#a-all').onclick=()=>{aBlank=false;loadAnswers()};$('#a-blank').onclick=()=>{aBlank=true;loadAnswers()};
+
+/* ---------- status ---------- */
+async function loadStatus(){
+  const s=await j('/api/status');
+  const checks=s.checks||s.config||[];
+  $('#s-table').innerHTML=`<table><thead><tr><th></th><th>check</th><th>detail</th></tr></thead><tbody>${
+    checks.map(c=>`<tr><td><span class="pill ${c.ok?'approved':'needs_human'}">${c.ok?'ok':'needs you'}</span></td><td>${esc(c.name)}</td><td class="mono">${esc(c.detail)}</td></tr>`).join('')}</tbody></table>`;
+  const llm=checks.find(c=>/LLM|API_KEY|provider/i.test(c.name||''));
+  $('#h-llm').textContent=llm?(llm.ok?'ok':'no key'):'?';
+}
+
+/* ---------- live browser ---------- */
+let seq=0, pollMs=700, up=false, lastUrl='';
+async function frameLoop(){
+  try{
+    const r=await fetch(`/api/live/frame?since=${seq}`);
+    if(r.status===200){
+      seq=+r.headers.get('X-Frame-Seq')||seq+1;
+      const blob=await r.blob(); const url=URL.createObjectURL(blob);
+      const img=$('#b-img'); const old=img.src; img.src=url; img.hidden=false; $('#b-off').hidden=true;
+      if(old) URL.revokeObjectURL(old);
+      const u=r.headers.get('X-Page-Url')||''; if(u&&u!==lastUrl&&document.activeElement!==$('#b-url')){$('#b-url').value=u;lastUrl=u}
+    }
+  }catch(e){}
+  setTimeout(frameLoop,pollMs);
+}
+async function statusLoop(){
+  try{
+    const s=await j('/api/live/status');
+    up=s.browser==='up'; pollMs=s.poll_ms||700;
+    $('#dot-browser').className='dot'+(up?' up':''); $('#h-browser').textContent=s.browser;
+    $('#dot-run').className='dot'+(s.run.running?' run':''); $('#h-run').textContent=s.run.running?'running':'idle';
+    $('#r-go').disabled=!!s.run.running; $('#r-go').textContent=s.run.running?'running…':'start run';
+    $('#b-tabs').innerHTML=s.pages.map((p,i)=>`<div class="bp-tab ${p.current?'on':''}" data-i="${i}" title="${esc(p.url)}">${esc(p.title||p.url||'tab')}</div>`).join('');
+    $$('.bp-tab').forEach(t=>t.onclick=()=>post('/api/live/show',{index:+t.dataset.i}));
+    const log=$('#r-log'); const txt=(s.log||[]).join('\n')||'idle';
+    if(log.textContent!==txt){log.innerHTML=(s.log||[]).map(l=>`<div class="${/failed|error|HALT/i.test(l)?'e':''}">${esc(l)}</div>`).join('')||'idle';log.scrollTop=log.scrollHeight}
+    if(s.run.error) log.insertAdjacentHTML('beforeend',`<div class="e">${esc(s.run.error)}</div>`);
+  }catch(e){}
+  setTimeout(statusLoop,1500);
+}
+async function startBrowser(){
+  $('#b-start').disabled=true;$('#b-start').textContent='starting…';$('#b-start2').textContent='starting…';
+  try{await post('/api/live/start')}catch(e){}
+  $('#b-start').disabled=false;$('#b-start').textContent='restart';$('#b-start2').textContent='start browser';
+}
+$('#b-start').onclick=startBrowser;$('#b-start2').onclick=startBrowser;
+$('#b-go').onclick=()=>post('/api/live/navigate',{url:$('#b-url').value});
+$('#b-url').onkeydown=e=>{if(e.key==='Enter')$('#b-go').click()};
+$('#b-new').onclick=()=>post('/api/live/tab',{url:'about:blank'});
+
+/* input forwarding: fractions of the frame, so the window can be any size.
+   Events are chained so keystrokes arrive in order -- parallel POSTs raced
+   and "software" landed as "softawre". */
+let chain=Promise.resolve();
+const send=ev=>{chain=chain.then(()=>post('/api/live/input',ev)).catch(()=>{});return chain};
+const view=$('#b-view'), img=$('#b-img');
+function frac(e){const r=img.getBoundingClientRect();return{fx:(e.clientX-r.left)/r.width,fy:(e.clientY-r.top)/r.height}}
+img.addEventListener('click',e=>{view.focus();send({type:'click',...frac(e)})});
+img.addEventListener('dblclick',e=>send({type:'dblclick',...frac(e)}));
+img.addEventListener('wheel',e=>{e.preventDefault();send({type:'wheel',...frac(e),dx:e.deltaX,dy:e.deltaY})},{passive:false});
+let mv=0; img.addEventListener('mousemove',e=>{const t=Date.now();if(t-mv>120){mv=t;send({type:'move',...frac(e)})}});
+view.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){view.blur();return}
+  const mods=(e.altKey?1:0)|(e.ctrlKey?2:0)|(e.metaKey?4:0)|(e.shiftKey?8:0);
+  if(e.key.length===1&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();send({type:'text',text:e.key});return}
+  if(['Enter','Tab','Backspace','Delete','Escape','ArrowLeft','ArrowUp','ArrowRight','ArrowDown','Home','End','PageUp','PageDown'].includes(e.key)||e.ctrlKey||e.metaKey){
+    e.preventDefault();send({type:'key',key:e.key,code:e.code,modifiers:mods})}
+});
+view.addEventListener('paste',e=>{const t=e.clipboardData.getData('text');if(t){e.preventDefault();send({type:'text',text:t})}});
+
+/* ---------- run ---------- */
+$('#r-go').onclick=async()=>{
+  const sources=$('#r-src').value.split(/[\s,]+/).filter(Boolean);
+  if(!sources.length){alert('give at least one source, e.g. greenhouse:anthropic');return}
+  const submit=$('#r-submit').checked;
+  if(submit&&!confirm('SUBMIT is on. Real applications will be sent in your name. Continue?'))return;
+  const r=await post('/api/live/run',{sources,limit:+$('#r-limit').value||1,approved:$('#r-appr').checked,submit});
+  if(!r.ok) alert(r.error||'could not start');
+};
+try{$('#r-src').value=localStorage.getItem('jobbot.sources')||''}catch(e){}
+$('#r-src').oninput=()=>{try{localStorage.setItem('jobbot.sources',$('#r-src').value)}catch(e){}};
+
+show(location.hash.slice(1)||'overview'); frameLoop(); statusLoop();
+</script>
+</body>
+</html>
