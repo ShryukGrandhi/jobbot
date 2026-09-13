@@ -326,6 +326,15 @@ def cmd_dashboard(args) -> int:
     return 0
 
 
+def cmd_ui(args) -> int:
+    """The brutalist UI: dashboard, queue, intake, editor and a live browser."""
+    from jobbot.ui.server import serve
+
+    serve(Path(args.csv).parent, args.profile, port=args.port,
+          open_browser=not args.no_open, host=args.host)
+    return 0
+
+
 def cmd_stats(args) -> int:
     t = Tracker(args.csv)
     s = t.stats()
@@ -401,6 +410,12 @@ def main(argv: list[str] | None = None) -> int:
                            "tailnet can reach it (never 0.0.0.0)")
     dash.add_argument("--host", default="127.0.0.1", help=argparse.SUPPRESS)
     dash.set_defaults(func=cmd_dashboard)
+
+    ui = sub.add_parser("ui", help="the UI: queue, intake, editor, answers and a live browser")
+    ui.add_argument("--port", type=int, default=8766)
+    ui.add_argument("--no-open", action="store_true", help="do not open a browser")
+    ui.add_argument("--host", default="127.0.0.1", help=argparse.SUPPRESS)
+    ui.set_defaults(func=cmd_ui)
 
     s = sub.add_parser("stats", help="summarize the tracker")
     s.set_defaults(func=cmd_stats)
