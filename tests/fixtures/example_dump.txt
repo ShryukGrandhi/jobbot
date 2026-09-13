@@ -1,0 +1,26 @@
+Okay so I'm Jane Doe, jane.doe@example.com, phone is 555 123 4567, I'm in San
+Francisco, California, 94107. LinkedIn is linkedin.com/in/janedoe and GitHub is
+github.com/janedoe.
+
+I'm a backend engineer. I've been at Example Corp since June 2023 as a Software
+Engineer. The big thing there was rebuilding the ingestion path, which took p99
+write latency from 840ms down to 95ms. I also migrated 38 services over with no
+customer-visible downtime. Stack was Python, Go, PostgreSQL, Docker and Redis.
+
+Before that I was at Tiny Startup from October 2021 to May 2023 as a Full Stack
+Engineer, React on the front and Django on the back, I built the customer
+dashboard that about 400 people used every day.
+
+School is Example University, B.S. in Computer Science, expected May 2027, GPA
+is 3.7, so I'm still enrolled.
+
+Projects: example-project, a FastAPI service at github.com/janedoe/example-project,
+Python and FastAPI. I designed it around a hard memory limit.
+
+I'm a TA for the systems course, two semesters, about 60 students each. I got
+second place at ICPC regionals in 2025. I speak English and Spanish.
+
+I'm looking for Software Engineer or Backend Engineer roles, also internships
+since I'm still in school, San Francisco or remote, open to hybrid. Target base
+is 150k and I wouldn't go under 130k. Two weeks notice. I'd rather not do
+frontend-only work. I heard about most of these through company websites.

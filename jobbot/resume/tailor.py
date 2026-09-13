@@ -173,7 +173,7 @@ def tailor(
     data["identity"] = {
         "name": ident.full_name,
         "location": ", ".join(x for x in (loc.city, loc.state) if x),
-        "email": str(ident.email),
+        "email": ident.email_str,
         "phone": ident.phone,
         "linkedin": (ident.linkedin or "").replace("https://", "").replace("www.", ""),
         "github": (ident.github or "").replace("https://", "").replace("www.", ""),

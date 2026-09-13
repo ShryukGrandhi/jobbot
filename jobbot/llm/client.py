@@ -59,6 +59,13 @@ MERIDIAN_URL = os.environ.get("MERIDIAN_URL", "http://127.0.0.1:3456")
 # Requests above this budget are streamed; long non-streaming calls time out.
 STREAM_THRESHOLD_TOKENS = 6000
 
+# Per-read timeout on the API socket. This was 600s: a stalled connection on a
+# 2,500-token knockout scan sat in SSLSocket.read for ten minutes before the
+# retry logic got a look at it -- with the browser tab open and the event loop
+# blocked the whole time. Streaming resets the clock on every chunk, so long
+# generations are unaffected; this only bounds silence.
+LLM_TIMEOUT_S = 120.0
+
 HIRES_LONG_EDGE = 2576
 STANDARD_LONG_EDGE = 1568
 
@@ -198,9 +205,9 @@ class LLMClient:
             self.client = Anthropic(
                 base_url=MERIDIAN_URL,
                 api_key=os.environ.get("ANTHROPIC_API_KEY", "meridian-placeholder"),
-                timeout=600.0,   # NOTE: a float, not httpx.Timeout -- the SDK
-                                 # uses httpx2 and mishandles an httpx.Timeout,
-                                 # which surfaces as an instant 'Connection error'.
+                timeout=LLM_TIMEOUT_S,   # NOTE: a float, not httpx.Timeout -- the SDK
+                                         # uses httpx2 and mishandles an httpx.Timeout,
+                                         # which surfaces as an instant 'Connection error'.
                 max_retries=0,   # tenacity owns retries
             )
         elif self.provider == "anthropic":
@@ -209,13 +216,24 @@ class LLMClient:
                 raise LLMError("JOBBOT_LLM_PROVIDER=anthropic requires ANTHROPIC_API_KEY")
             self.client = Anthropic(
                 api_key=key,
-                timeout=600.0,
+                timeout=LLM_TIMEOUT_S,
                 max_retries=0,
             )
         else:
             raise LLMError(f"unknown provider {self.provider!r} (use 'meridian' or 'anthropic')")
 
         log.info("llm.init", provider=self.provider, model=self.model)
+
+    @property
+    def can_fall_back(self) -> bool:
+        """Only fail over to a backend that is actually usable.
+
+        `JOBBOT_LLM_FALLBACK=gemini` is the shipped default while GEMINI_API_KEY
+        is empty in .env.example. Switching to it then raises out of `call()` on
+        the first attempt and, because the switch is sticky, kills every later
+        call in the run -- strictly worse than retrying the primary.
+        """
+        return self.fallback == "gemini" and bool(os.environ.get("GEMINI_API_KEY"))
 
     # -- health / quota ----------------------------------------------------
 
@@ -289,7 +307,7 @@ class LLMClient:
             else:
                 msg = self.client.messages.create(**kwargs)
         except Exception as exc:  # noqa: BLE001
-            if _is_quota_exhausted(exc) and self.fallback == "gemini":
+            if _is_quota_exhausted(exc) and self.can_fall_back:
                 log.warning("llm.quota_exhausted_failing_over", error=str(exc)[:200])
                 self.fallback_active = True
                 return self._call_fallback(system, blocks, tool, kwargs["max_tokens"])
@@ -297,7 +315,7 @@ class LLMClient:
                 self._primary_failures += 1
                 # Repeated transient failure is indistinguishable from an outage.
                 # Switch rather than burn the retry budget on a dead backend.
-                if self._primary_failures >= 3 and self.fallback == "gemini":
+                if self._primary_failures >= 3 and self.can_fall_back:
                     log.warning("llm.primary_unhealthy_failing_over",
                                 failures=self._primary_failures)
                     self.fallback_active = True
@@ -376,7 +394,17 @@ def cached_system(text: str) -> list[dict[str, Any]]:
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 
 
+# Anthropic error `type`s that clear on their own. Checked against the body
+# before the status code, because a mid-stream error event arrives on a 200
+# response: the SDK wraps it in a generic APIStatusError whose status_code is
+# that 200, so the status says nothing and the body says everything.
+_TRANSIENT_BODY = ("overloaded_error", "rate_limit_error", "api_error")
+
+
 def _is_transient(exc: Exception) -> bool:
+    blob = str(exc).lower()
+    if any(t in blob for t in _TRANSIENT_BODY):
+        return True
     name = type(exc).__name__
     if name in {
         "APIConnectionError",
@@ -397,9 +425,15 @@ def _is_transient(exc: Exception) -> bool:
 
 
 def _is_quota_exhausted(exc: Exception) -> bool:
-    """Subscription window exhausted -- retrying will not help, only waiting."""
+    """Subscription window exhausted -- retrying will not help, only waiting.
+
+    Deliberately does NOT match a plain `rate_limit_error`. Anthropic returns
+    that type for an ordinary per-minute 429, which clears in seconds; treating
+    it as exhaustion made the first burst of concurrency fail the whole run over
+    to the fallback permanently.
+    """
     blob = str(exc).lower()
     return any(s in blob for s in (
         "out of extra usage", "usage limit", "quota exceeded",
-        "rate_limit_error", "exceeded your current quota",
+        "exceeded your current quota",
     ))

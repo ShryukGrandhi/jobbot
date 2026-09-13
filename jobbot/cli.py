@@ -14,9 +14,12 @@ import structlog
 from jobbot.browser.session import BrowserConfig, BrowserSession
 from jobbot.discovery.sources import Discovery, JobPost, ghost_score
 from jobbot.llm.client import LLMClient
-from jobbot.orchestrator import Orchestrator, RunConfig, fit_score
+from jobbot.orchestrator import (
+    HaltWithTabOpen, Orchestrator, RunConfig, fit_score,
+)
 from jobbot.profile import Profile
-from jobbot.tracker.csv_tracker import Tracker
+from jobbot.queue import JobQueue
+from jobbot.tracker.csv_tracker import Status, Tracker
 
 log = structlog.get_logger(__name__)
 DEFAULT_PROFILE = Path("config/profile.yaml")
@@ -42,11 +45,35 @@ async def _collect(sources: list[str], limit_per: int) -> list[JobPost]:
             elif kind == "workday":
                 tenant, site, pod = (rest.split("/") + ["wd1"])[:3]
                 posts += await d.workday(tenant, site, pod, max_jobs=limit_per)
+            elif kind == "interns":
+                posts += await d.intern_list(rest or "simplify")
+            elif kind == "linkedin":
+                # Aggregator rows carry no apply endpoint, so resolve each one to
+                # the company's own board before it reaches the queue. The
+                # orchestrator refuses anything still unresolved rather than
+                # falling back to LinkedIn's own apply flow.
+                from jobbot.discovery.aggregator import enrich_with_boards, scrape
+                found = await asyncio.to_thread(
+                    scrape, rest, results_wanted=max(20, limit_per))
+                posts += await enrich_with_boards(found)
             else:
                 print(f"unknown source kind: {kind!r}", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001
             print(f"  {spec}: {type(exc).__name__}: {str(exc)[:120]}", file=sys.stderr)
     return posts
+
+
+def _standard_resume(args, data_dir: Path) -> Path | None:
+    """The one PDF to send, unless the run explicitly asks for a tailored one."""
+    if args.tailor:
+        return None
+    p = Path(args.resume).expanduser() if args.resume else data_dir / "standard_resume.pdf"
+    if not p.exists():
+        if args.resume:
+            raise SystemExit(f"no such resume: {p}")
+        return None
+    print(f"resume: sending {p} to every application (--tailor to generate instead)")
+    return p
 
 
 def cmd_discover(args) -> int:
@@ -69,7 +96,8 @@ def cmd_check(args) -> int:
     print("profile:")
     try:
         profile = Profile.load(args.profile)
-        print(f"  loaded {profile.identity.full_name} <{profile.identity.email}>")
+        print(f"  loaded {profile.identity.full_name or '(no name set)'} "
+              f"<{profile.identity.email_str or 'no email set'}>")
         print(f"  {len(profile.experience)} roles, {profile.total_years_experience}y total")
         gaps = profile.employment_gaps()
         if gaps:
@@ -137,11 +165,47 @@ def cmd_run(args) -> int:
     tracker = Tracker(args.csv)
     llm = LLMClient()
 
+    data_dir = Path(args.csv).parent
+    queue = JobQueue(data_dir / "queue.json")
+    queue.add_posts(posts, {p.job_id: fit_score(profile, p) for p in posts})
+    # An excluded company is a standing "never": record it as a decision so it
+    # is visible on the queue page rather than silently filtered at run time.
+    queue.decide_many({p.job_id: "blacklist" for p in posts
+                       if profile.excludes(p.company)})
+
+    # The queue is the candidate's decision, so it outranks anything discovery
+    # or the fit filter thinks. Blacklisted jobs are ones being applied to by
+    # hand; sending a second application would be worse than sending none.
+    blacklisted = queue.blacklisted_ids()
+    if blacklisted:
+        posts = [p for p in posts if p.job_id not in blacklisted]
+    if args.approved:
+        ok = queue.approved_ids()
+        posts = [p for p in posts if p.job_id in ok]
+        print(f"queue: {len(posts)} approved job(s) of {sum(queue.counts().values())} known")
+        if not posts:
+            print("nothing approved yet -- tick jobs at /queue on the dashboard")
+            return 0
+
+    standard = _standard_resume(args, data_dir)
+
     cfg = RunConfig(
+        # Everything a run writes -- audit dirs, answers.csv, lessons.jsonl --
+        # lives beside the tracker. Defaulting to a bare "data" meant --csv moved
+        # the index but every artifact still landed in ./data of the cwd.
+        data_dir=Path(args.csv).parent,
         dry_run=not args.submit,
+        standard_resume=standard,
         make_github_project=not args.no_project,
         publish_project_private=args.private_projects,
         min_match_score=args.min_match,
+        # An explicit tick per job outranks the anti-spam cap: the candidate
+        # approved nine roles at one company one at a time, and silently
+        # dropping six of them would be the software overriding the person.
+        per_company_cap=10_000 if args.approved else RunConfig.per_company_cap,
+        persist_until_submitted=args.persist,
+        max_heal_rounds=12 if args.persist else RunConfig.max_heal_rounds,
+        attempts_per_job=args.attempts,
     )
 
     async def go():
@@ -150,13 +214,32 @@ def cmd_run(args) -> int:
         try:
             orch = Orchestrator(profile, session, llm, tracker, cfg)
             return await orch.run(posts, limit=args.limit)
+        except HaltWithTabOpen as halt:
+            print(f"\nHALTED on {halt.job_id} with the tab still open:")
+            for b in halt.blockers:
+                print(f"  - {b.label[:70]}: {b.problem[:150]}")
+            print("\nThe form is filled and live. Nothing was submitted and "
+                  "nothing was discarded.")
+            await asyncio.Event().wait()
         finally:
+            if args.keep_open:
+                # The window is the only way to inspect what was actually
+                # entered while the page is still live; screenshots come after
+                # the fact. Leaving it up holds the profile lock, so the next
+                # run cannot start until this window is closed.
+                print("\n--keep-open: browser left running. "
+                      "Close the window before the next run.")
+                await asyncio.Event().wait()
             await session.close()
 
     results = asyncio.run(go())
     print(f"\n{'job':<34} {'status':<16} detail")
     for r in results:
         print(f"{r.job_id[:34]:<34} {r.status:<16} {r.reason[:60]}")
+    for r in results:
+        if r.status in (Status.SUBMITTED.value, Status.CONFIRMED.value):
+            queue.decide(r.job_id, "applied")
+    queue.save()
     print(f"\ntracker: {tracker.stats()}")
     if cfg.dry_run:
         print("\nDRY RUN: forms were filled and verified but NOT submitted. "
@@ -171,7 +254,7 @@ def cmd_ats_test(args) -> int:
     profile = Profile.load(args.profile)
     i = profile.identity
     expect = {
-        "name": i.full_name, "email": str(i.email),
+        "name": i.full_name, "email": i.email_str,
         "phone": re.sub(r"[^0-9]", "", i.phone or "")[-10:],
         "location": i.location.city,
         "company": profile.experience[0].company if profile.experience else "",
@@ -198,6 +281,28 @@ def cmd_ats_test(args) -> int:
     return 0
 
 
+def cmd_report(args) -> int:
+    """Every answer entered for one application, field by field."""
+    from jobbot.report import report
+
+    d = Path(args.audit_dir)
+    if not d.is_dir():
+        print(f"no such audit dir: {d}", file=sys.stderr)
+        return 1
+    print(report(d))
+    return 0
+
+
+def cmd_dashboard(args) -> int:
+    """Local read-only web view of everything on disk."""
+    from jobbot.dashboard import serve
+
+    serve(Path(args.csv).parent, args.profile,
+          port=args.port, open_browser=not args.no_open,
+          tailscale=args.tailscale, host=args.host)
+    return 0
+
+
 def cmd_stats(args) -> int:
     t = Tracker(args.csv)
     s = t.stats()
@@ -216,7 +321,9 @@ def main(argv: list[str] | None = None) -> int:
 
     d = sub.add_parser("discover", help="find and rank jobs, no browser")
     d.add_argument("--source", action="append", required=True,
-                   help="greenhouse:slug | lever:slug | ashby:slug | workday:tenant/site/pod")
+                   help="greenhouse:slug | lever:slug | ashby:slug | "
+                        "smartrecruiters:slug | workable:slug | "
+                        "workday:tenant/site/pod | linkedin:search terms")
     d.add_argument("--limit", type=int, default=40)
     d.set_defaults(func=cmd_discover)
 
@@ -231,6 +338,19 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--source", action="append", required=True)
     r.add_argument("--limit", type=int, default=5)
     r.add_argument("--submit", action="store_true", help="actually submit (default: dry run)")
+    r.add_argument("--approved", action="store_true",
+                   help="only apply to jobs ticked on the dashboard queue")
+    r.add_argument("--resume", help="PDF to send to every application "
+                                    "(default: data/standard_resume.pdf if present)")
+    r.add_argument("--tailor", action="store_true",
+                   help="generate a resume per application instead of sending the standard one")
+    r.add_argument("--attempts", type=int, default=1,
+                   help="work the same application up to N times before moving on")
+    r.add_argument("--persist", action="store_true",
+                   help="work one application until it submits; on failure stop "
+                        "with the tab open instead of moving on")
+    r.add_argument("--keep-open", action="store_true",
+                   help="leave the browser open after the run instead of closing it")
     r.add_argument("--no-project", action="store_true")
     r.add_argument("--private-projects", action="store_true")
     r.add_argument("--min-match", type=float, default=0.5)
@@ -240,6 +360,19 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--pdf", required=True)
     a.add_argument("--lever-url", help="a jobs.lever.co/<co>/<id>/apply URL for a live parse test")
     a.set_defaults(func=cmd_ats_test)
+
+    rp = sub.add_parser("report", help="every answer entered, field by field")
+    rp.add_argument("audit_dir", help="data/applications/<job_id>/")
+    rp.set_defaults(func=cmd_report)
+
+    dash = sub.add_parser("dashboard", help="local web view of every run")
+    dash.add_argument("--port", type=int, default=8765)
+    dash.add_argument("--no-open", action="store_true", help="do not open a browser")
+    dash.add_argument("--tailscale", action="store_true",
+                      help="bind the Tailscale address so other devices on your "
+                           "tailnet can reach it (never 0.0.0.0)")
+    dash.add_argument("--host", default="127.0.0.1", help=argparse.SUPPRESS)
+    dash.set_defaults(func=cmd_dashboard)
 
     s = sub.add_parser("stats", help="summarize the tracker")
     s.set_defaults(func=cmd_stats)
