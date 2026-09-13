@@ -69,11 +69,64 @@ class BrowserSession:
         self._launched_at: float | None = None
         self._start_lock = asyncio.Lock()
 
+    def _singleton_holder(self) -> int | None:
+        """PID currently holding this profile, if one is alive.
+
+        Chromium records the owner in `SingletonLock`, a symlink named
+        `<host>-<pid>`. Returns None when the lock is absent or its process is
+        gone -- i.e. when the lock is stale and safe to clear.
+        """
+        lock = self.config.profile_dir / "SingletonLock"
+        try:
+            target = os.readlink(lock)
+        except OSError:
+            return None
+        _, _, pid_s = target.rpartition("-")
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            return None
+        try:
+            os.kill(pid, 0)          # signal 0: existence check, no effect
+        except ProcessLookupError:
+            return None
+        except PermissionError:
+            return pid               # alive, owned by someone else
+        return pid
+
+    def _clear_stale_lock(self) -> bool:
+        """Remove singleton files left by a process that no longer exists."""
+        removed = False
+        for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+            f = self.config.profile_dir / name
+            if f.is_symlink() or f.exists():
+                with contextlib.suppress(OSError):
+                    f.unlink()
+                    removed = True
+        if removed:
+            log.warning("browser.cleared_stale_lock", profile=str(self.config.profile_dir))
+        return removed
+
     async def start(self) -> None:
         async with self._start_lock:
             if self.ctx is not None:
                 return
             self.config.profile_dir.mkdir(parents=True, exist_ok=True)
+
+            # One persistent profile means one Chromium at a time. A run killed
+            # by Ctrl-C, an OOM reap, or a crashed harness leaves that Chromium
+            # alive holding the profile, and every later run then died on a raw
+            # "Opening in existing browser session" from deep inside Playwright
+            # -- no indication of which process to kill, or that the profile was
+            # even the problem.
+            holder = self._singleton_holder()
+            if holder is not None:
+                raise RuntimeError(
+                    f"the browser profile {self.config.profile_dir} is in use by "
+                    f"pid {holder} -- a previous run that did not shut down. "
+                    f"Close that window, or: kill {holder}"
+                )
+            self._clear_stale_lock()
 
             kwargs: dict[str, Any] = dict(
                 headless=self.config.headless,
@@ -141,29 +194,41 @@ class BrowserSession:
         return len(self.ctx.pages) if self.ctx is not None else 0
 
     @contextlib.asynccontextmanager
-    async def tab(self, label: str = "tab") -> AsyncIterator[Any]:
-        """Lease one tab from the budget. Always closed on exit.
+    async def tab(self, label: str = "tab", *, keep_open_on: tuple = ()) -> AsyncIterator[Any]:
+        """Lease one tab from the budget. Closed on exit, with one exception.
 
         Blocks rather than raising when the budget is full, so callers
         self-throttle instead of needing their own queue.
+
+        `keep_open_on` names exception types that must leave the page standing:
+        a filled application is worth more open for inspection than closed for
+        tidiness, and closing it discards the work rather than preserving it.
         """
         if self.ctx is None:
             await self.start()
         await self._sem.acquire()
         page = None
+        keep = False
         try:
             page = await self.ctx.new_page()
             self._live.add(page)
             log.debug("browser.tab_open", label=label, live=len(self._live))
             yield page
+        except keep_open_on as exc:   # noqa: B030 -- an empty tuple catches nothing
+            keep = True
+            log.warning("browser.tab_left_open", label=label, why=type(exc).__name__)
+            raise
         finally:
-            if page is not None:
+            # No `return` here: returning from a finally block swallows the
+            # exception on its way out, which would cancel the very halt that
+            # asked for the tab to stay open.
+            if not keep and page is not None:
                 self._live.discard(page)
                 with contextlib.suppress(Exception):
                     if not page.is_closed():
                         await page.close()
+                log.debug("browser.tab_closed", label=label, live=len(self._live))
             self._sem.release()
-            log.debug("browser.tab_closed", label=label, live=len(self._live))
 
     async def reap_orphans(self) -> int:
         """Close tabs the governor never issued.

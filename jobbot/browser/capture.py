@@ -70,6 +70,10 @@ async def dismiss_overlays(page: Any) -> int:
         "button:has-text('Got it')", "button:has-text('Agree')",
         "[aria-label='Accept cookies']", "#onetrust-accept-btn-handler",
         ".osano-cm-accept-all",
+        # Workday's own banner. Its button is only reachable by automation id,
+        # and while it is up it covers the sign-in email field: every Workday
+        # application failed with "element is covered by <DIV>".
+        "[data-automation-id='legalNoticeAcceptButton']",
     ]
     for sel in candidates:
         try:

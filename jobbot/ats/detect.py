@@ -30,6 +30,7 @@ class ATS(str, enum.Enum):
     RIPPLING = "rippling"
     AVATURE = "avature"
     DOVER = "dover"
+    ORACLE = "oracle"
     LINKEDIN = "linkedin"
     UNKNOWN = "unknown"
 
@@ -50,6 +51,10 @@ _HOST_PATTERNS: list[tuple[ATS, re.Pattern[str]]] = [
     (ATS.ICIMS, re.compile(r"(^|\.)icims\.com$", re.I)),
     (ATS.ICIMS, re.compile(r"(^|\.)jibeapply\.com$", re.I)),
     (ATS.TALEO, re.compile(r"(^|\.)taleo\.net$", re.I)),
+    # Oracle Cloud HCM. Nine American Express internships were filed
+    # "no ATS apply URL resolved" because this host was unrecognised.
+    (ATS.ORACLE, re.compile(r"(^|\.)oraclecloud\.com$", re.I)),
+    (ATS.ORACLE, re.compile(r"(^|\.)oracle\.com$", re.I)),
     (ATS.SUCCESSFACTORS, re.compile(r"(^|\.)(successfactors\.(com|eu)|sapsf\.(com|eu)|ns2cloud\.com)$", re.I)),
     (ATS.SMARTRECRUITERS, re.compile(r"(^|\.)smartrecruiters\.com$", re.I)),
     (ATS.WORKABLE, re.compile(r"(^|\.)workable\.com$", re.I)),
