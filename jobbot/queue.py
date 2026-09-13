@@ -89,7 +89,7 @@ class JobQueue:
         if not self.path.exists():
             return
         try:
-            raw = json.loads(self.path.read_text() or "{}")
+            raw = json.loads(self.path.read_text(encoding="utf-8") or "{}")
         except (OSError, json.JSONDecodeError) as exc:
             # A corrupt queue must not wipe the candidate's decisions on the
             # next write, so refuse to start from empty.
@@ -102,7 +102,7 @@ class JobQueue:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(
-            {k: v.to_dict() for k, v in self._entries.items()}, indent=1))
+            {k: v.to_dict() for k, v in self._entries.items()}, indent=1), encoding="utf-8")
         tmp.replace(self.path)
 
     # -- reading ----------------------------------------------------------

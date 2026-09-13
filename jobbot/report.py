@@ -14,7 +14,7 @@ from typing import Any
 
 def _load(p: Path) -> Any:
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
 

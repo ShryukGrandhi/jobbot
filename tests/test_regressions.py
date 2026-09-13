@@ -24,7 +24,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 @pytest.fixture(scope="module")
 def profile() -> Profile:
     return Profile.model_validate(
-        yaml.safe_load((ROOT / "config" / "profile.example.yaml").read_text())
+        yaml.safe_load((ROOT / "config" / "profile.example.yaml").read_text(encoding="utf-8"))
     )
 
 
@@ -340,7 +340,7 @@ def test_a_selector_survives_an_id_that_starts_with_a_digit() -> None:
     import re
     from pathlib import Path
 
-    js = Path("jobbot/forms/extract.py").read_text()
+    js = Path("jobbot/forms/extract.py").read_text(encoding="utf-8")
     assert 'return `[id="${attrEsc(el.id)}"]`' in js, \
         "the id selector must be an attribute selector, which needs no escaping"
     assert not re.search(r'label\[for="\$\{esc\}"\]', js), \
@@ -438,7 +438,7 @@ def test_every_module_imports_what_it_uses() -> None:
               "shutil", "traceback", "unicodedata", "csv", "html", "base64", "io"}
     problems = []
     for path in sorted(Path("jobbot").rglob("*.py")):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         imported: set[str] = set()
         for n in ast.walk(tree):
             if isinstance(n, ast.Import):

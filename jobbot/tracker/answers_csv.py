@@ -11,7 +11,6 @@ across every application, or filter to just the answers that were left blank.
 from __future__ import annotations
 
 import csv
-import fcntl
 import json
 import os
 import tempfile
@@ -21,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+
+from jobbot.tracker.filelock import exclusive
 
 log = structlog.get_logger(__name__)
 
@@ -65,29 +66,25 @@ class AnswerLog:
         """Append this application's answers, replacing any earlier attempt."""
         lock = self.path.with_suffix(".lock")
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with open(lock, "w") as lf:
-            fcntl.flock(lf, fcntl.LOCK_EX)
-            try:
-                rows = [r for r in self._read() if r.get("job_id") != job_id]
-                for a in answers:
-                    val = a.get("value")
-                    rows.append({
-                        "recorded_at": stamp,
-                        "job_id": job_id, "company": company, "title": title,
-                        "ats": ats, "job_url": job_url,
-                        "field_label": (a.get("label") or a.get("field_id") or "")[:300],
-                        "field_kind": a.get("kind", ""),
-                        "required": str(bool(a.get("required"))),
-                        "answer": "" if val is None else str(val)[:4000],
-                        "source": a.get("source", ""),
-                        "confidence": str(a.get("confidence", "")),
-                        "rationale": (a.get("rationale") or "")[:500],
-                        "left_blank": str(bool(a.get("needs_human"))),
-                        "blank_reason": (a.get("blocked_reason") or "")[:300],
-                    })
-                self._write(rows)
-            finally:
-                fcntl.flock(lf, fcntl.LOCK_UN)
+        with exclusive(lock):
+            rows = [r for r in self._read() if r.get("job_id") != job_id]
+            for a in answers:
+                val = a.get("value")
+                rows.append({
+                    "recorded_at": stamp,
+                    "job_id": job_id, "company": company, "title": title,
+                    "ats": ats, "job_url": job_url,
+                    "field_label": (a.get("label") or a.get("field_id") or "")[:300],
+                    "field_kind": a.get("kind", ""),
+                    "required": str(bool(a.get("required"))),
+                    "answer": "" if val is None else str(val)[:4000],
+                    "source": a.get("source", ""),
+                    "confidence": str(a.get("confidence", "")),
+                    "rationale": (a.get("rationale") or "")[:500],
+                    "left_blank": str(bool(a.get("needs_human"))),
+                    "blank_reason": (a.get("blocked_reason") or "")[:300],
+                })
+            self._write(rows)
         log.info("answers_csv.recorded", job_id=job_id, rows=len(answers))
         return len(answers)
 
@@ -119,7 +116,7 @@ def backfill(audit_root: str | Path = "data/applications",
         job_id = d.name.replace("_", ":", 1)
         row = idx.get(job_id)
         try:
-            answers = json.loads(f.read_text())
+            answers = json.loads(f.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
         n += alog.record(

@@ -67,7 +67,7 @@ def _fallback_read() -> dict[str, dict]:
     if not FALLBACK_PATH.exists():
         return {}
     try:
-        return json.loads(FALLBACK_PATH.read_text() or "{}")
+        return json.loads(FALLBACK_PATH.read_text(encoding="utf-8") or "{}")
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -78,7 +78,7 @@ def _fallback_write(key: str, payload: dict) -> None:
     data[key] = payload
     # Create with 0600 from the start rather than widening then narrowing.
     fd = os.open(FALLBACK_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, sort_keys=True)
     os.chmod(FALLBACK_PATH, 0o600)
 
@@ -104,11 +104,11 @@ def save(ats: str, tenant: str, username: str, password: str) -> Credential:
     idx = {}
     if INDEX_PATH.exists():
         try:
-            idx = json.loads(INDEX_PATH.read_text())
+            idx = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             idx = {}
     idx[k] = {"username": username, "created_at": cred.created_at}
-    INDEX_PATH.write_text(json.dumps(idx, indent=2, sort_keys=True))
+    INDEX_PATH.write_text(json.dumps(idx, indent=2, sort_keys=True), encoding="utf-8")
 
     log.info("credentials.saved", ats=ats, tenant=tenant, username=username)
     return cred
@@ -138,7 +138,7 @@ def have(ats: str, tenant: str) -> bool:
 def list_tenants() -> dict[str, dict]:
     if INDEX_PATH.exists():
         try:
-            return json.loads(INDEX_PATH.read_text())
+            return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             return {}
     return {}

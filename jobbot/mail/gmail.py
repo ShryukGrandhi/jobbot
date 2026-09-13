@@ -87,7 +87,7 @@ def _service() -> Any:
             flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET), SCOPES)
             # Loopback redirect; the out-of-band flow was disabled by Google.
             creds = flow.run_local_server(port=0)
-        TOKEN_PATH.write_text(creds.to_json())
+        TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
         TOKEN_PATH.chmod(0o600)
 
     return build("gmail", "v1", credentials=creds, cache_discovery=False)

@@ -195,7 +195,7 @@ def load_raw(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return yaml.safe_load(path.read_text()) or {}
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception as exc:  # noqa: BLE001
         log.warning("editor.unreadable_profile", path=str(path), error=str(exc)[:200])
         return {}
@@ -418,7 +418,7 @@ def save(path: Path, data: dict[str, Any]) -> dict[str, Any]:
 
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(yaml.safe_dump(profile.model_dump(mode="json"),
-                                  sort_keys=False, width=100, allow_unicode=True))
+                                  sort_keys=False, width=100, allow_unicode=True), encoding="utf-8")
     tmp.replace(path)
 
     missing = profile.missing_legally_significant()

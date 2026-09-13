@@ -57,7 +57,7 @@ def test_round_trip_through_disk_preserves_false(tmp_path) -> None:
     path = tmp_path / "profile.yaml"
     res = save(path, from_form({**BASE, "screening": {"criminal_history": False}}))
     assert res["ok"], res
-    back = to_form(yaml.safe_load(path.read_text()))
+    back = to_form(yaml.safe_load(path.read_text(encoding="utf-8")))
     assert back["screening"]["criminal_history"] is False, \
         "a No must survive save/load, not come back as unset"
 
@@ -243,7 +243,7 @@ def test_no_unparseable_field_can_abort_a_save(tmp_path) -> None:
         "compensation": {"target_base": "competitive", "minimum_base": "$140,000"},
     }))
     assert res["ok"], res
-    prof = yaml.safe_load((tmp_path / "p.yaml").read_text())
+    prof = yaml.safe_load((tmp_path / "p.yaml").read_text(encoding="utf-8"))
     assert prof["education"][0]["gpa"] is None
     assert prof["notice_period_weeks"] is None
     assert prof["min_requirement_match"] == 0.5

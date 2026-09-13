@@ -450,10 +450,9 @@ class Profile(BaseModel):
 
     @classmethod
     def load(cls, path: str | Path) -> "Profile":
-        data = yaml.safe_load(Path(path).read_text())
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
         return cls.model_validate(data)
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(
-            yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False, width=100)
-        )
+            yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False, width=100), encoding="utf-8")

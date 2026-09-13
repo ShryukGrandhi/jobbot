@@ -15,7 +15,6 @@ from __future__ import annotations
 import contextlib
 import csv
 import enum
-import fcntl
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field, fields
@@ -100,13 +99,8 @@ class Tracker:
 
     @contextlib.contextmanager
     def _lock(self) -> Iterator[None]:
-        lock_path = self.path.with_suffix(".lock")
-        with open(lock_path, "w") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+        with exclusive(self.path.with_suffix(".lock")):
+            yield
 
     # -- io ---------------------------------------------------------------
 

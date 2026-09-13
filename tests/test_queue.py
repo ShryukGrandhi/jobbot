@@ -66,7 +66,7 @@ def test_an_unknown_decision_is_refused(tmp_path) -> None:
 def test_a_corrupt_file_does_not_silently_start_empty(tmp_path) -> None:
     """Starting from empty would rewrite every decision away on the next save."""
     p = tmp_path / "queue.json"
-    p.write_text("{not json")
+    p.write_text("{not json", encoding="utf-8")
     try:
         JobQueue(p)
     except RuntimeError as exc:

@@ -18,7 +18,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 @pytest.fixture(scope="module")
 def profile() -> Profile:
     return Profile.model_validate(
-        yaml.safe_load((ROOT / "config" / "profile.example.yaml").read_text())
+        yaml.safe_load((ROOT / "config" / "profile.example.yaml").read_text(encoding="utf-8"))
     )
 
 

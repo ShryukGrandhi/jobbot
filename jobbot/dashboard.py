@@ -144,7 +144,7 @@ def read_csv(path: Path) -> list[dict[str, str]]:
 
 def read_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
 
@@ -153,7 +153,7 @@ def read_jsonl(path: Path, limit: int = 400) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     out = []
-    for line in path.read_text().splitlines()[-limit:]:
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
         try:
             out.append(json.loads(line))
         except Exception:  # noqa: BLE001
@@ -268,7 +268,7 @@ class Dash:
         st = p.stat()
         name = (self.data / "standard_resume.name")
         return {"exists": True, "kb": st.st_size // 1024,
-                "name": name.read_text()[:120] if name.exists() else p.name,
+                "name": name.read_text(encoding="utf-8")[:120] if name.exists() else p.name,
                 "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%d %b %H:%M")}
 
     def queue_view(self, show: str = "all", search: str = "") -> bytes:
@@ -294,7 +294,7 @@ class Dash:
         dest = self.standard_resume_path()
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(body)
-        (self.data / "standard_resume.name").write_text(name[:120] or dest.name)
+        (self.data / "standard_resume.name").write_text(name[:120] or dest.name, encoding="utf-8")
         log.info("dashboard.standard_resume_saved", bytes=len(body), name=name[:80])
         return {"ok": True, "kb": len(body) // 1024}
 
@@ -458,7 +458,7 @@ class Dash:
                             ("crash", "error.txt")):
             f = d / name
             if f.exists():
-                parts.append(f'<h2>{label}</h2><pre class=warn>{e(f.read_text()[:4000])}</pre>')
+                parts.append(f'<h2>{label}</h2><pre class=warn>{e(f.read_text(encoding="utf-8")[:4000])}</pre>')
 
         smoke = read_json(d / "project_smoke.json")
         if smoke:
@@ -573,7 +573,7 @@ class Dash:
 
     def log_view(self) -> bytes:
         f = self.data / "notifications.log"
-        body = f.read_text()[-40000:] if f.exists() else ""
+        body = f.read_text(encoding="utf-8")[-40000:] if f.exists() else ""
         return page("notifications", "/log",
                     "<h2>notifications sent or attempted</h2>"
                     + (f"<pre>{e(body)}</pre>" if body else
@@ -891,7 +891,7 @@ def _key_in_dotenv() -> bool:
     """Is ANTHROPIC_API_KEY set in a .env file the code will actually read?"""
     for p in (Path(".env"), Path(__file__).resolve().parents[1] / ".env"):
         if p.exists():
-            for line in p.read_text().splitlines():
+            for line in p.read_text(encoding="utf-8").splitlines():
                 k, _, v = line.strip().partition("=")
                 if k == "ANTHROPIC_API_KEY" and v.strip() and not v.startswith("sk-ant-..."):
                     return True
@@ -989,25 +989,25 @@ def demo() -> None:
             "job_id,company,title,ats,status,match_score,questions_total,"
             "questions_answered,questions_flagged,heal_rounds,discovered_at\n"
             "greenhouse:42,Acme,Software Engineer,greenhouse,confirmed,0.82,14,14,0,1,"
-            "2026-09-08T10:00:00+00:00\n")
+            "2026-09-08T10:00:00+00:00\n", encoding="utf-8")
         (root / "answers.csv").write_text(
             "recorded_at,job_id,company,title,ats,job_url,field_label,field_kind,"
             "required,answer,source,confidence,rationale,left_blank,blank_reason\n"
             "2026-09-08T10:00:00+00:00,greenhouse:42,Acme,SWE,greenhouse,,First Name,"
-            "text,True,Jane,profile,1.0,profile identity,False,\n")
+            "text,True,Jane,profile,1.0,profile identity,False,\n", encoding="utf-8")
         d = root / "applications" / "greenhouse_42"
         (d / "answers.json").write_text(json.dumps(
             [{"label": "First Name", "value": "Jane", "source": "profile",
               "confidence": 1.0, "rationale": "profile identity",
-              "needs_human": False, "blocked_reason": "", "required": True}]))
+              "needs_human": False, "blocked_reason": "", "required": True}]), encoding="utf-8")
         (d / "verification.json").write_text(json.dumps(
             {"ready": True, "summary": "clean", "issues": [], "heal_rounds": 1,
-             "unfilled_required": [], "validation_errors": []}))
+             "unfilled_required": [], "validation_errors": []}), encoding="utf-8")
         (d / "screenshots" / "cp1_0.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         (root / "lessons.jsonl").write_text(json.dumps(
             {"at": "2026-09-08T10:00:00+00:00", "ats": "greenhouse", "company": "Acme",
-             "observation": "o", "fix": "f", "scope": "this_ats"}) + "\n")
-        (root / "notifications.log").write_text("--- sent\n")
+             "observation": "o", "fix": "f", "scope": "this_ats"}) + "\n", encoding="utf-8")
+        (root / "notifications.log").write_text("--- sent\n", encoding="utf-8")
 
         dash = Dash(root, Path("config/profile.yaml"))
         for name, out in (("overview", dash.overview()),

@@ -458,7 +458,7 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001
             tb = traceback.format_exc()[-1200:]
             log.error("apply.crashed", job_id=post.job_id, error=str(exc)[:200])
-            (audit / "error.txt").write_text(tb)
+            (audit / "error.txt").write_text(tb, encoding="utf-8")
             self.tracker.update(post.job_id, status=Status.FAILED.value,
                                 error=str(exc)[:300])
             return ApplicationResult(post.job_id, Status.FAILED.value, str(exc)[:200])
@@ -508,19 +508,19 @@ class Orchestrator:
             job_title=post.title, company=post.company,
             job_description=post.description,
             max_rounds=self.cfg.max_resume_rounds)
-        (audit / "resume_critique.json").write_text(json.dumps(critique_history, indent=2))
+        (audit / "resume_critique.json").write_text(json.dumps(critique_history, indent=2), encoding="utf-8")
         self._last_ats_score = float(
             next((h.get("final_ats_score", 0.0) for h in reversed(critique_history)
                   if "final_ats_score" in h), 0.0))
 
         dropped = sanitize_skills(self.profile, tailored)
         if dropped:
-            (audit / "skills_removed.txt").write_text("\n".join(dropped))
+            (audit / "skills_removed.txt").write_text("\n".join(dropped), encoding="utf-8")
         fabrications = fabrication_check(self.profile, tailored)
         if fabrications:
             # A resume that overstates is worse than no application.
             log.error("apply.fabrication_detected", job_id=jid, problems=fabrications[:4])
-            (audit / "fabrication_report.txt").write_text("\n".join(fabrications))
+            (audit / "fabrication_report.txt").write_text("\n".join(fabrications), encoding="utf-8")
             self.tracker.update(jid, status=Status.NEEDS_HUMAN.value,
                                 error="resume fabrication check failed")
             return resume_pdf_none(), "", ApplicationResult(
@@ -530,7 +530,7 @@ class Orchestrator:
         resume_pdf = audit / "resume.pdf"
         await render_one_page(page, tailored, resume_pdf)
         _keep_a_copy(resume_pdf, post)
-        (audit / "resume_content.json").write_text(json.dumps(tailored, indent=2))
+        (audit / "resume_content.json").write_text(json.dumps(tailored, indent=2), encoding="utf-8")
         self.tracker.update(jid, status=Status.PREPARED.value,
                             resume_path=str(resume_pdf), github_project_url=project_url,
                             match_score=fit_score(self.profile, post))
@@ -594,7 +594,7 @@ class Orchestrator:
         form, _ = await ck.checkpoint_parse(page, self.llm, shots)
         (audit / "form.json").write_text(json.dumps(
             {"submit": form.submit_label, "step": form.step,
-             "fields": [f.to_prompt_dict() for f in form.fields]}, indent=2))
+             "fields": [f.to_prompt_dict() for f in form.fields]}, indent=2), encoding="utf-8")
 
         # Vision decides whether a sign-in gate is up, and on Blackstone's form
         # it answered differently on three consecutive attempts -- True, False,
@@ -708,7 +708,7 @@ class Orchestrator:
         legal_blocked = [a for a in blocked if "legally significant" in a.blocked_reason]
         if legal_blocked:
             reasons = [a.blocked_reason for a in legal_blocked]
-            (audit / "needs_human.txt").write_text("\n".join(reasons))
+            (audit / "needs_human.txt").write_text("\n".join(reasons), encoding="utf-8")
             self.tracker.update(jid, status=Status.NEEDS_HUMAN.value,
                                 questions_total=len(form.fields),
                                 questions_flagged=len(blocked),
@@ -798,11 +798,11 @@ class Orchestrator:
                     "blocked_reason": a.blocked_reason,
                 }
                 for a in answers
-            ], indent=2, default=str))
+            ], indent=2, default=str), encoding="utf-8")
             self.answer_log.record(
                 job_id=jid, company=post.company, title=post.title,
                 ats=post.ats.value, job_url=post.url,
-                answers=json.loads((audit / "answers.json").read_text()))
+                answers=json.loads((audit / "answers.json").read_text(encoding="utf-8")))
 
         dump_answers()
 
@@ -820,7 +820,7 @@ class Orchestrator:
             "unfilled_required": verification.unfilled_required,
             "validation_errors": verification.validation_errors,
             "heal_rounds": rounds,
-        }, indent=2))
+        }, indent=2), encoding="utf-8")
 
         # Workday is a five-step wizard -- My Information, My Experience,
         # Application Questions, Voluntary Disclosures, Review -- and this
@@ -887,7 +887,7 @@ class Orchestrator:
             self.tracker.update(jid, status=Status.NEEDS_HUMAN.value,
                                 error=f"{len(verification.blockers)} unresolved blockers")
             (audit / "blockers.txt").write_text(
-                "\n".join(f"{i.label}: {i.problem}" for i in verification.blockers))
+                "\n".join(f"{i.label}: {i.problem}" for i in verification.blockers), encoding="utf-8")
             # A question only the candidate can answer is not something to sit
             # in front of. Waiting on one halts every other application behind
             # it, and no amount of retrying will produce a legal attestation
@@ -1043,7 +1043,7 @@ class Orchestrator:
         problems = validate_plan(plan)
         if problems:
             log.warning("project.plan_rejected", problems=problems[:4])
-            (audit / "project_rejected.txt").write_text("\n".join(problems))
+            (audit / "project_rejected.txt").write_text("\n".join(problems), encoding="utf-8")
             return None, ""
 
         local = audit / "project"
@@ -1053,7 +1053,7 @@ class Orchestrator:
                       keep_local=local, dry_run=True)
 
         smoke = smoke_test(pub.local_path, plan.get("run_command"))
-        (audit / "project_smoke.json").write_text(json.dumps(smoke, indent=2))
+        (audit / "project_smoke.json").write_text(json.dumps(smoke, indent=2), encoding="utf-8")
         if not smoke["passed"]:
             log.warning("project.smoke_failed", output=smoke["output"][-200:])
             return None, ""

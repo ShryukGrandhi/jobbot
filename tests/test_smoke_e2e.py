@@ -98,7 +98,7 @@ class Workspace:
                 return
             except (urllib.error.URLError, ConnectionError):
                 time.sleep(0.25)
-        raise RuntimeError(f"server did not come up; log:\n{self.log.read_text()[-2000:]}")
+        raise RuntimeError(f"server did not come up; log:\n{self.log.read_text(encoding="utf-8")[-2000:]}")
 
     def stop(self) -> None:
         if self.proc:
@@ -136,7 +136,7 @@ def ws(tmp_path_factory) -> Workspace:
     w.start()
     yield w
     w.stop()
-    print(f"\n--- server log ({w.log}) tail ---\n{w.log.read_text()[-3000:]}")
+    print(f"\n--- server log ({w.log}) tail ---\n{w.log.read_text(encoding="utf-8")[-3000:]}")
 
 
 # ---------------------------------------------------------------- 1. surface
@@ -165,7 +165,7 @@ def test_resume_text_extraction(ws: Workspace) -> None:
 def test_intake_organizes_dump_and_resume_into_cards(ws: Workspace) -> None:
     resume = ws.post("/api/resume-text", FIX.joinpath("example_resume.pdf").read_bytes())
     out = ws.post("/api/intake/organize", {
-        "dump": FIX.joinpath("example_dump.txt").read_text(),
+        "dump": FIX.joinpath("example_dump.txt").read_text(encoding="utf-8"),
         "links": {"linkedin": "linkedin.com/in/janedoe", "github": "github.com/janedoe"},
         "resumes": [{"name": "example_resume.pdf", "label": "general", "text": resume["text"]}],
     }, timeout=300)
@@ -188,16 +188,16 @@ def test_intake_organizes_dump_and_resume_into_cards(ws: Workspace) -> None:
     for n in ("840ms", "95ms", "38 services", "3.7"):
         assert n in joined, f"{n} from the source is missing from the proposal"
 
-    ws.tmp.joinpath("cards.json").write_text(json.dumps(out, indent=1))
+    ws.tmp.joinpath("cards.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
 
 
 def test_accept_everything_saves_the_whole_profile(ws: Workspace) -> None:
-    cards = json.loads(ws.tmp.joinpath("cards.json").read_text())["cards"]
+    cards = json.loads(ws.tmp.joinpath("cards.json").read_text(encoding="utf-8"))["cards"]
     out = ws.post("/api/intake/apply", {"patches": [c["patch"] for c in cards]})
     assert out["ok"], out.get("errors")
     assert out["roles"] == 2
 
-    d = yaml.safe_load(ws.profile.read_text())
+    d = yaml.safe_load(ws.profile.read_text(encoding="utf-8"))
     ident = d["identity"]
     assert (ident["first_name"], ident["last_name"]) == ("Jane", "Doe")
     assert ident["email"] == "jane.doe@example.com"
@@ -247,7 +247,7 @@ def test_editor_sets_screening_and_preflight_clears(ws: Workspace) -> None:
     assert out["missing_identity"] == []
     assert out["screening_set"] == len(JANE_SCREENING)
 
-    d = yaml.safe_load(ws.profile.read_text())
+    d = yaml.safe_load(ws.profile.read_text(encoding="utf-8"))
     assert d["experience"] and d["projects"], "setting screening must not clobber the rest"
     assert d["screening"]["criminal_history"]["value"] is False
     assert d["screening"]["criminal_history"]["provenance"] == "confirmed"
@@ -299,7 +299,7 @@ def test_dry_run_applies_to_one_posting_and_records_everything(ws: Workspace) ->
         f"artifacts must live beside the tracker, not in ./data of the cwd: {audit}"
     assert audit.is_dir()
     assert (audit / "form.json").exists(), "checkpoint 1 must record the parsed form"
-    form = json.loads((audit / "form.json").read_text())
+    form = json.loads((audit / "form.json").read_text(encoding="utf-8"))
     assert form["fields"], "a real application form has fields"
     shots = list((audit / "screenshots").glob("*.png"))
     assert shots, "every checkpoint captures the page"
@@ -308,7 +308,7 @@ def test_dry_run_applies_to_one_posting_and_records_everything(ws: Workspace) ->
         assert (audit / "resume.pdf").stat().st_size > 1000
         assert (audit / "answers.json").exists()
         assert (audit / "verification.json").exists()
-        answers = json.loads((audit / "answers.json").read_text())
+        answers = json.loads((audit / "answers.json").read_text(encoding="utf-8"))
         assert answers
 
         # Only entries that were actually written count. A null value carrying
@@ -343,5 +343,5 @@ def test_dry_run_applies_to_one_posting_and_records_everything(ws: Workspace) ->
         # `failed` is not an acceptable end state for "applying works". The one
         # time this branch fired it was an Anthropic overload that the client
         # classified as permanent and never retried.
-        err = (audit / "error.txt").read_text()[-1500:] if (audit / "error.txt").exists() else a["error"]
+        err = (audit / "error.txt").read_text(encoding="utf-8")[-1500:] if (audit / "error.txt").exists() else a["error"]
         pytest.fail(f"application ended {a['status']!r}: {err}")

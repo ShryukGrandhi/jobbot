@@ -132,7 +132,7 @@ def get_identity(client_id: str | None = None) -> GitHubIdentity:
 def consent_record() -> dict | None:
     if CONSENT_PATH.exists():
         try:
-            return json.loads(CONSENT_PATH.read_text())
+            return json.loads(CONSENT_PATH.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             return None
     return None
@@ -147,7 +147,7 @@ def grant_consent(identity: GitHubIdentity, *, public: bool) -> dict:
         "public_repos_allowed": public,
         "granted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    CONSENT_PATH.write_text(json.dumps(rec, indent=2))
+    CONSENT_PATH.write_text(json.dumps(rec, indent=2), encoding="utf-8")
     log.info("github.consent_recorded", login=identity.login, public=public)
     return rec
 

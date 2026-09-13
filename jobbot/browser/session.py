@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +59,42 @@ class BrowserConfig:
     extra_launch_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
+
+def _pid_alive(pid: int) -> bool:
+    """Existence check that never signals the process.
+
+    POSIX: `kill(pid, 0)` is the documented probe. Windows: `os.kill` with
+    signal 0 is *not* a probe there -- it calls TerminateProcess -- so open a
+    query-only handle instead.
+    """
+    if pid <= 0:
+        return False
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True              # alive, owned by someone else
+        return True
+    import ctypes
+    from ctypes import wintypes
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    k32 = ctypes.windll.kernel32
+    k32.OpenProcess.restype = wintypes.HANDLE
+    h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return False
+    try:
+        code = wintypes.DWORD()
+        STILL_ACTIVE = 259
+        if k32.GetExitCodeProcess(h, ctypes.byref(code)):
+            return code.value == STILL_ACTIVE
+        return True
+    finally:
+        k32.CloseHandle(h)
+
+
 class BrowserSession:
     """Owns the single persistent context and rations tabs across coroutines."""
 
@@ -86,13 +123,7 @@ class BrowserSession:
             pid = int(pid_s)
         except ValueError:
             return None
-        try:
-            os.kill(pid, 0)          # signal 0: existence check, no effect
-        except ProcessLookupError:
-            return None
-        except PermissionError:
-            return pid               # alive, owned by someone else
-        return pid
+        return pid if _pid_alive(pid) else None
 
     def _clear_stale_lock(self) -> bool:
         """Remove singleton files left by a process that no longer exists."""
