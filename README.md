@@ -138,6 +138,14 @@ uv run jobbot run --source greenhouse:anthropic --approved --limit 3
 `run` is a **dry run by default**. It fills and verifies everything and stops
 before submitting. Add `--submit` only after reading `data/answers.csv`.
 
+**It does not give up on an application.** A crash mid-form (a model call
+that 400s, a menu that did not open, a navigation race) is retried *in the
+same tab* with backoff until the application settles; `--attempts N` caps
+it. A form that fills but will not verify clean gets three full passes. And
+when the only thing left is a question only you can answer, the tab is left
+**open** with the form filled, the CLI lists it, and waits for you. Nothing
+you typed is thrown away.
+
 ### Optional integrations
 
 - **Gmail** (Workday verification codes): create a Desktop-app OAuth client,
@@ -172,7 +180,7 @@ Sources: `greenhouse:slug`, `lever:slug`, `ashby:slug`, `smartrecruiters:slug`,
 
 **25% of the score is reliability, so here is exactly how this was tested.**
 
-### Unit suite: 77 tests, runs in 2 seconds, no network
+### Unit suite: 82 tests, runs in 2 seconds, no network
 
 ```bash
 uv run pytest -q
@@ -180,7 +188,7 @@ uv run pytest -q
 
 | File | What it pins down |
 |------|-------------------|
-| `tests/test_regressions.py` | 40+ regressions caught on real runs: a refused submit is not "submitted"; a Workday step that did not advance is not reported as advanced; a rate limit is not retried into a longer one; API silence is bounded at 120s; a stale browser lock is cleared and a live one is named; every module imports what it uses (the `asyncio`-undefined class of bug that once threw away two filled applications). |
+| `tests/test_regressions.py` | 40+ regressions caught on real runs: an application is retried in its own tab until it settles and a needs-you result keeps its tab open; the healer re-applies a confirmed consent value and snaps decline wording; the persistent browser context survives its last tab closing; a refused submit is not "submitted"; a Workday step that did not advance is not reported as advanced; a rate limit is not retried into a longer one; API silence is bounded at 120s; a stale browser lock is cleared and a live one is named; every module imports what it uses (the `asyncio`-undefined class of bug that once threw away two filled applications). |
 | `tests/test_llm_errors.py` | A plain 429 is retried, not treated as quota exhaustion. Failover only to a backend that has a key. |
 | `tests/test_fit_score.py` | Postings with no description (Workday) are scored on title, not filtered out wholesale. |
 | `tests/test_selector_quoting.py` | Option labels with apostrophes ("Bachelor's Degree", "I don't wish to answer") produce valid selectors. |
@@ -220,7 +228,25 @@ clears preflight, discovery finds and ranks jobs, and a dry run fills one real
 posting and records every answer. It is skipped by default because it needs a
 key, a GUI and several minutes. It never passes `--submit`.
 
-### Verified live during this submission
+### Verified live during this submission (real employer form, dry run)
+
+A full dry run against a live Anthropic posting on Greenhouse, on Gemini
+2.5 Pro, from this Windows machine:
+
+| Stage | Result |
+|---|---|
+| Checkpoint 1 (vision parse) | 26 fields, 12 required, 15 page tiles |
+| Resume tailor + critique | fabrication check **rejected** an invented "90%" the model added; final ATS score 69.5, fits one page first try |
+| Fill | 20/26 fields; Country, sponsorship, EEO answers all from the profile, decline options via synonym match |
+| Checkpoint 2 (vision verify) | 5 blockers found, including an arbitration consent that did not take |
+| Heal | now re-applies the confirmed profile value and snaps "I do not wish to answer" to "Decline To Self Identify" |
+| Ledger | 26 rows in `answers.csv`, every one with source and confidence |
+
+Four bugs were found only by running it live, each now fixed and pinned by
+a test: a Windows-only browser-context death, a Gemini schema rejection, a
+missing import in the tracker lock, and a healer that refused to re-apply
+the candidate's own consent answer.
+
 
 - Discovery against Greenhouse (Anthropic) and Ashby (OpenAI): 1,390 postings
   ranked in under 10 seconds, ghost flags present.
