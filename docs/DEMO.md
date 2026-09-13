@@ -73,7 +73,7 @@ Cut to the terminal:
 uv run pytest -q
 ```
 
-> "76 unit tests, CI on Linux, macOS and Windows, a dashboard self-check
+> "77 unit tests, CI on Linux, macOS and Windows, a dashboard self-check
 > that renders every view and attacks the path guard, and a live end-to-end
 > spec that drives the real server, real boards, and a real browser."
 

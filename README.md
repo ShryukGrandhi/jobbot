@@ -172,7 +172,7 @@ Sources: `greenhouse:slug`, `lever:slug`, `ashby:slug`, `smartrecruiters:slug`,
 
 **25% of the score is reliability, so here is exactly how this was tested.**
 
-### Unit suite: 76 tests, runs in 2 seconds, no network
+### Unit suite: 77 tests, runs in 2 seconds, no network
 
 ```bash
 uv run pytest -q
