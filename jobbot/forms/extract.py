@@ -38,18 +38,32 @@ _EXTRACT_JS = r"""
     return r.width > 0 && r.height > 0;
   };
 
+  // Quote a value for use INSIDE an attribute selector. Not CSS.escape: that
+  // is for identifiers, and using it inside quotes turns an id beginning with
+  // a digit into "\32 ba77b0f..." -- a selector that matches nothing. Ashby
+  // ids are UUIDs, so roughly half of them begin with a digit.
+  const attrEsc = (v) => String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+  // A field inside a shadow root cannot be looked up through `document`:
+  // ids are scoped to the root that holds them. SmartRecruiters renders its
+  // whole application form in web components (`spl-input` and friends), so
+  // every label lookup against `document` came back empty and the form read
+  // as having no fields at all.
+  const rootOf = (el) => el.getRootNode() || document;
+
   const labelFor = (el) => {
     // 1. explicit label[for=id] -- the only join that cannot mis-associate
     if (el.id) {
-      const esc = (window.CSS && CSS.escape) ? CSS.escape(el.id) : el.id.replace(/"/g, '\\"');
-      const l = document.querySelector(`label[for="${esc}"]`);
+      const l = rootOf(el).querySelector(`label[for="${attrEsc(el.id)}"]`);
       if (l && l.innerText.trim()) return l.innerText.trim();
     }
     // 2. aria-labelledby
     const lb = el.getAttribute('aria-labelledby');
     if (lb) {
       const txt = lb.split(/\s+/).map(id => {
-        const n = document.getElementById(id);
+        const r = rootOf(el);
+        const n = r.getElementById ? r.getElementById(id)
+                                   : r.querySelector(`[id="${attrEsc(id)}"]`);
         return n ? n.innerText.trim() : '';
       }).filter(Boolean).join(' ');
       if (txt) return txt;
@@ -88,11 +102,20 @@ _EXTRACT_JS = r"""
     return '';
   };
 
+  let stamped = 0;
   const cssPath = (el) => {
-    if (el.id) {
-      const esc = (window.CSS && CSS.escape) ? CSS.escape(el.id) : el.id;
-      return `#${esc}`;
+    // A path built by walking parentElement stops dead at a shadow boundary,
+    // and an id inside a shadow root is not unique in the document. Stamping
+    // the element is the one selector that survives both -- Playwright's CSS
+    // engine pierces open shadow roots, so it finds the stamp.
+    if (el.getRootNode() !== document) {
+      const key = 'shadow' + (++stamped);
+      el.setAttribute('data-jobbot-field', key);
+      return `[data-jobbot-field="${key}"]`;
     }
+    // An attribute selector, not "#id": it needs no identifier escaping, so a
+    // leading digit or a dot in the id cannot break it.
+    if (el.id) return `[id="${attrEsc(el.id)}"]`;
     const parts = [];
     let n = el;
     while (n && n.nodeType === 1 && parts.length < 6) {
@@ -111,12 +134,24 @@ _EXTRACT_JS = r"""
 
   const out = [];
   const seenGroup = new Set();
-  const nodes = document.querySelectorAll('input, textarea, select, [role="combobox"], [role="radiogroup"], [contenteditable="true"]');
+  const SEL = 'input, textarea, select, [role="combobox"], [role="radiogroup"], [contenteditable="true"]';
+  const deep = (root, out) => {
+    for (const el of root.querySelectorAll(SEL)) out.push(el);
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) deep(el.shadowRoot, out);
+    }
+    return out;
+  };
+  const nodes = deep(document, []);
 
   for (const el of nodes) {
     const tag = el.tagName.toLowerCase();
     const type = (el.getAttribute('type') || '').toLowerCase();
     if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'reset') continue;
+    // A honeypot is a field only a bot can see, and filling it is the tell
+    // that marks the application as automated. Oracle's is called
+    // "honey-pot-1" and sits in the middle of the real fields.
+    if (/honey[\s_-]?pot/i.test((el.id || '') + ' ' + (el.name || '') + ' ' + (el.className || ''))) continue;
     if (!vis(el)) continue;
 
     let kind = 'text';
@@ -154,6 +189,22 @@ _EXTRACT_JS = r"""
     else if (type === 'date')    { kind = 'date'; }
 
     const raw = labelFor(el);
+
+    // A scripted date picker is an ordinary text input whose placeholder is
+    // the only clue: Ashby's says "Pick date...". Left as text, the model
+    // answered it in prose -- "Immediately - I can start this month" -- and
+    // the form sat there with no date selected. \bdate\b, so "update" and
+    // "candidate" do not qualify.
+    if (kind === 'text') {
+      const hint = ((el.getAttribute('placeholder') || '') + ' ' + raw).toLowerCase();
+      const yearOnly = /\byear\b/.test(hint) && !/\bdate\b|mm|dd/.test(hint);
+      // "Expected Graduation Year" wants 2028, not a calendar date. Treated as
+      // a date it was typed into a picker that resolved it to 12/31/2027 -- a
+      // year out, and wrong.
+      if (!yearOnly && /\bdate\b|mm\s*\/\s*dd|dd\s*\/\s*mm|yyyy/.test(hint)) {
+        kind = 'date';
+      }
+    }
     out.push({
       label: raw.replace(/^~/, '').replace(/\s*\*\s*$/, '').trim(),
       label_is_proximity: raw.startsWith('~'),

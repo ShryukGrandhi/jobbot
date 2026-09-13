@@ -13,6 +13,7 @@ fails closed and is escalated rather than guessed.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Sequence
 
 from rapidfuzz import fuzz
@@ -23,11 +24,66 @@ _WS = re.compile(r"\s+")
 _STOP = {"a", "an", "the", "of", "or", "and", "in", "to", "degree", "s"}
 
 
+def fold_accents(s: str) -> str:
+    """Drop combining marks, keep everything else.
+
+    Greenhouse's school search returns nothing for "San José State University"
+    and the right answer for "San Jose State University", so this is needed for
+    what gets typed as well as for what gets compared.
+    """
+    return "".join(c for c in unicodedata.normalize("NFKD", s or "")
+                   if not unicodedata.combining(c))
+
+
+# A location dropdown says "Seattle, WA" and the answer we hold says "Seattle,
+# Washington, United States". Those scored below every threshold and a required
+# field was left empty. Only a TRAILING two-letter code is expanded: "IN", "OR",
+# "OK", "ME" and "HI" are ordinary words, and expanding them mid-sentence would
+# turn "will you work in office" into "will you work indiana office".
+_STATE_CODES = {
+    "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas",
+    "ca": "california", "co": "colorado", "ct": "connecticut", "de": "delaware",
+    "fl": "florida", "ga": "georgia", "hi": "hawaii", "id": "idaho",
+    "il": "illinois", "in": "indiana", "ia": "iowa", "ks": "kansas",
+    "ky": "kentucky", "la": "louisiana", "me": "maine", "md": "maryland",
+    "ma": "massachusetts", "mi": "michigan", "mn": "minnesota", "ms": "mississippi",
+    "mo": "missouri", "mt": "montana", "ne": "nebraska", "nv": "nevada",
+    "nh": "new hampshire", "nj": "new jersey", "nm": "new mexico", "ny": "new york",
+    "nc": "north carolina", "nd": "north dakota", "oh": "ohio", "ok": "oklahoma",
+    "or": "oregon", "pa": "pennsylvania", "ri": "rhode island",
+    "sc": "south carolina", "sd": "south dakota", "tn": "tennessee", "tx": "texas",
+    "ut": "utah", "vt": "vermont", "va": "virginia", "wa": "washington",
+    "wv": "west virginia", "wi": "wisconsin", "wy": "wyoming",
+    "dc": "district of columbia",
+}
+
+
+# A code that follows a comma is a state: "Costa Mesa, CA (HQ)", "Seattle, WA".
+# Bare "in"/"or"/"ok" in a sentence never is, and neither is "CA" with no comma
+# before it, so the comma is what makes this safe to apply anywhere in a string.
+_COMMA_STATE = re.compile(r",\s*([A-Za-z]{2})\b")
+
+
+def _expand_comma_states(s: str) -> str:
+    return _COMMA_STATE.sub(
+        lambda m: ", " + _STATE_CODES.get(m.group(1).lower(), m.group(1)), s)
+
+
+def _expand_trailing_state(words: list[str]) -> list[str]:
+    if len(words) >= 2 and words[-1] in _STATE_CODES:
+        return words[:-1] + _STATE_CODES[words[-1]].split()
+    return words
+
+
 def normalize(s: str) -> str:
-    s = (s or "").lower().replace("’", "'").replace("‘", "'")
+    # The profile says "San José State University" and the picker lists
+    # "San Jose State University"; comparing those as different strings left a
+    # required field empty.
+    s = _expand_comma_states(fold_accents(s))
+    s = s.lower().replace("’", "'").replace("‘", "'")
     s = s.replace("'", "")
     s = _PUNCT.sub(" ", s)
-    return _WS.sub(" ", s).strip()
+    return " ".join(_expand_trailing_state(_WS.sub(" ", s).strip().split()))
 
 
 def _stem(w: str) -> str:
@@ -126,6 +182,54 @@ def match_boolean(value: object, options: Sequence[str]) -> str | None:
         no = normalize(o)
         if any(no.startswith(normalize(w)) for w in want):
             return o
+    return None
+
+
+_NEGATED = re.compile(r"\b(not|no|never|unable|unwilling|decline|don'?t|cannot)\b", re.I)
+# A willingness, not an assertion about where someone lives or what they hold.
+_NONCOMMITTAL = re.compile(r"\b(willing|able|open to|prepared to|happy to)\b", re.I)
+
+
+def match_yes_no_prose(value: object, options: Sequence[str]) -> str | None:
+    """Map yes/no onto options written as sentences.
+
+    Cloudflare asks "Do you currently live or are you willing to relocate?" and
+    offers three sentences; the answer we hold is "Yes", which matches none of
+    them, so a required field stayed empty.
+
+    For "no", take the negated option. For "yes", prefer an option stating a
+    willingness over one asserting a fact: "I am willing to relocate" is true
+    of a candidate open to relocating, while "I currently live in this job's
+    location" may not be, and choosing between two factual claims would put a
+    statement in the candidate's mouth. With no willingness option and more
+    than one affirmative, this declines rather than guess.
+    """
+    if isinstance(value, bool):
+        yes = value
+    else:
+        nv = normalize(str(value))
+        if nv in {normalize(x) for x in _YES}:
+            yes = True
+        elif nv in {normalize(x) for x in _NO}:
+            yes = False
+        else:
+            return None
+
+    # Only meaningful when the options are prose, not literal yes/no labels.
+    if any(normalize(o) in {normalize(w) for w in (*_YES, *_NO)} for o in options):
+        return None
+
+    negated = [o for o in options if _NEGATED.search(o)]
+    affirmative = [o for o in options if o not in negated]
+
+    if not yes:
+        return negated[0] if len(negated) == 1 else None
+
+    willing = [o for o in affirmative if _NONCOMMITTAL.search(o)]
+    if len(willing) == 1:
+        return willing[0]
+    if len(affirmative) == 1:
+        return affirmative[0]
     return None
 
 
