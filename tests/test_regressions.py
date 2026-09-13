@@ -700,3 +700,67 @@ def test_both_ledgers_round_trip_through_the_file_lock(tmp_path) -> None:
                  job_url="https://x", answers=[{"label": "First Name", "value": "Jane"}])
     assert n == 1 and a.for_job("gh:1")[0]["answer"] == "Jane"
     assert (tmp_path / "applications.lock").exists()
+
+
+def test_the_context_never_loses_its_last_window(tmp_path, monkeypatch) -> None:
+    """Chromium on Windows/Linux exits when its last window closes.
+
+    Closing the launch-time blank page, or the last leased tab between two
+    applications, took the whole persistent context down with
+    "BrowserContext.new_page: Target page, context or browser has been closed".
+    A blank keeper page must therefore survive start(), every tab lease, and
+    orphan reaping.
+    """
+    import asyncio
+
+    from jobbot.browser import session as mod
+
+    class FakePage:
+        def __init__(self, ctx, url="about:blank"):
+            self.ctx, self.url, self.closed = ctx, url, False
+        def is_closed(self):
+            return self.closed
+        async def close(self):
+            self.closed = True
+            self.ctx.pages.remove(self)
+
+    class FakeCtx:
+        def __init__(self):
+            self.pages = [FakePage(self)]
+        def set_default_navigation_timeout(self, ms): pass
+        def set_default_timeout(self, ms): pass
+        async def new_page(self):
+            if not self.pages:
+                raise RuntimeError("Target page, context or browser has been closed")
+            p = FakePage(self); self.pages.append(p); return p
+        async def close(self):
+            self.pages.clear()
+
+    fake = FakeCtx()
+    launch_blank = fake.pages[0]
+
+    async def fake_launch(profile_dir, **kwargs):
+        return fake
+
+    monkeypatch.setattr(mod, "launch_persistent_context_async", fake_launch)
+    sess = mod.BrowserSession(mod.BrowserConfig(profile_dir=tmp_path / "p"))
+
+    async def scenario():
+        await sess.start()
+        assert launch_blank in fake.pages, "the launch blank page must be kept"
+        assert sess.total_pages == 0, "the keeper is not a leased tab"
+
+        for _ in range(3):                      # three applications in a row
+            async with sess.tab("app") as page:
+                page.url = "https://example.com/apply"
+                assert sess.live_tabs == 1
+            assert fake.pages, "closing the leased tab must not close the last window"
+
+        await sess.reap_orphans()
+        assert fake.pages and not fake.pages[0].is_closed(), "reaping must spare the keeper"
+
+        async with sess.tab("x"):
+            await launch_blank.close()          # something ate the keeper
+        assert fake.pages, "a lost keeper is recreated before the tab closes"
+
+    asyncio.run(scenario())

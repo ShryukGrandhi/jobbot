@@ -105,6 +105,16 @@ class BrowserSession:
         self._live: set[Any] = set()          # tabs currently leased out
         self._launched_at: float | None = None
         self._start_lock = asyncio.Lock()
+        # One blank page that lives as long as the context. On Windows and
+        # Linux, Chromium exits when its last window closes, and Playwright
+        # then reports the whole persistent context as closed. Closing the
+        # launch-time about:blank page, or the last leased tab between two
+        # applications, therefore killed the run with
+        # "BrowserContext.new_page: Target page, context or browser has been
+        # closed". macOS keeps the process alive with no windows, which is why
+        # this never showed up there. The keeper is not counted against the
+        # tab budget and is never reaped.
+        self._keeper: Any = None
 
     def _singleton_holder(self) -> int | None:
         """PID currently holding this profile, if one is alive.
@@ -191,14 +201,16 @@ class BrowserSession:
             self.ctx.set_default_timeout(self.config.nav_timeout_ms)
             self._launched_at = time.time()
 
-            # A persistent context launches with a blank page attached. Close it
-            # rather than pooling it: leasing one shared page to concurrent
-            # callers is a race, and keeping it as a spare silently makes the
-            # real ceiling max_tabs + 1.
-            for p in list(self.ctx.pages):
-                if p.url in ("about:blank", ""):
-                    with contextlib.suppress(Exception):
-                        await p.close()
+            # A persistent context launches with a blank page attached. It is
+            # never leased out (sharing it between callers would be a race);
+            # it stays open as the keeper so the context outlives every tab.
+            # Any extra blanks beyond the first are closed.
+            blanks = [p for p in self.ctx.pages if p.url in ("about:blank", "")]
+            for p in blanks[1:]:
+                with contextlib.suppress(Exception):
+                    await p.close()
+            self._keeper = blanks[0] if blanks else None
+            await self._ensure_keeper()
 
             log.info(
                 "browser.start",
@@ -206,6 +218,14 @@ class BrowserSession:
                 headless=self.config.headless,
                 max_tabs=self.config.max_tabs,
             )
+
+    async def _ensure_keeper(self) -> None:
+        """Make sure a blank page is open before anything else closes."""
+        if self.ctx is None:
+            return
+        if self._keeper is None or self._keeper.is_closed():
+            with contextlib.suppress(Exception):
+                self._keeper = await self.ctx.new_page()
 
     async def close(self) -> None:
         if self.ctx is None:
@@ -222,7 +242,10 @@ class BrowserSession:
 
     @property
     def total_pages(self) -> int:
-        return len(self.ctx.pages) if self.ctx is not None else 0
+        """Pages open in the context, not counting the keeper."""
+        if self.ctx is None:
+            return 0
+        return sum(1 for p in self.ctx.pages if p is not self._keeper)
 
     @contextlib.asynccontextmanager
     async def tab(self, label: str = "tab", *, keep_open_on: tuple = ()) -> AsyncIterator[Any]:
@@ -255,6 +278,7 @@ class BrowserSession:
             # asked for the tab to stay open.
             if not keep and page is not None:
                 self._live.discard(page)
+                await self._ensure_keeper()   # never close the last window
                 with contextlib.suppress(Exception):
                     if not page.is_closed():
                         await page.close()
@@ -272,6 +296,8 @@ class BrowserSession:
             return 0
         killed = 0
         for p in list(self.ctx.pages):
+            if p is self._keeper:
+                continue
             if p not in self._live and not p.is_closed():
                 with contextlib.suppress(Exception):
                     await p.close()
