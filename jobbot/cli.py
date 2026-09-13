@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import structlog
+from dotenv import load_dotenv
 
 from jobbot.browser.session import BrowserConfig, BrowserSession
 from jobbot.discovery.sources import Discovery, JobPost, ghost_score
@@ -82,12 +83,23 @@ def cmd_discover(args) -> int:
     rows = []
     for p in posts:
         rows.append((fit_score(profile, p) if profile else 0.0, ghost_score(p, posts), p))
+    # Discovery feeds the dashboard queue, so the candidate can tick jobs at
+    # /queue before anything opens a browser. Needs no API key: the queue is a
+    # shortlist, not a run.
+    queue = JobQueue(Path(args.csv).parent / "queue.json")
+    queue.add_posts(posts, {p.job_id: fit for fit, _, p in rows})
+    if profile is not None:
+        queue.decide_many({p.job_id: "blacklist" for p in posts
+                           if profile.excludes(p.company)})
+    queue.save()
     rows.sort(key=lambda r: r[0], reverse=True)
     print(f"{'fit':>5} {'ghost':>6}  {'ats':<12} {'company':<18} title")
     for m, g, p in rows[: args.limit]:
         flag = " GHOST?" if g > 0.6 else ""
         print(f"{m:5.2f} {g:6.2f}  {p.ats.value:<12} {p.company[:18]:<18} {p.title[:52]}{flag}")
     print(f"\n{len(posts)} postings from {len(args.source)} source(s)")
+    print(f"queue: {queue.counts()}  -- tick jobs at /queue on `jobbot dashboard`, "
+          "then `jobbot run --approved`")
     return 0
 
 
@@ -163,7 +175,6 @@ def cmd_run(args) -> int:
     profile = Profile.load(args.profile)
     posts = asyncio.run(_collect(args.source, 200))
     tracker = Tracker(args.csv)
-    llm = LLMClient()
 
     data_dir = Path(args.csv).parent
     queue = JobQueue(data_dir / "queue.json")
@@ -188,6 +199,7 @@ def cmd_run(args) -> int:
             return 0
 
     standard = _standard_resume(args, data_dir)
+    llm = LLMClient()   # after the queue gate: "nothing approved" needs no key
 
     cfg = RunConfig(
         # Everything a run writes -- audit dirs, answers.csv, lessons.jsonl --
@@ -314,6 +326,9 @@ def cmd_stats(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # .env is where SETUP.md tells people to put their keys. Nothing else
+    # reads it; without this line every documented key is silently ignored.
+    load_dotenv()
     p = argparse.ArgumentParser(prog="jobbot", description="Autonomous job application agent")
     p.add_argument("--profile", default=str(DEFAULT_PROFILE))
     p.add_argument("--csv", default=str(DEFAULT_CSV))

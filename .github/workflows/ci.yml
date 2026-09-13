@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra dev
+      - run: uv run pytest -q --ignore=tests/test_smoke_e2e.py
+      - name: dashboard self-check (every view renders, path guard holds)
+        run: uv run python -m jobbot.dashboard
+      - name: CLI entry points parse
+        run: |
+          uv run jobbot --help
+          uv run jobbot run --help
