@@ -48,6 +48,11 @@ _IDENTITY_MAP: list[tuple[re.Pattern[str], str]] = [
     # number. This is the classic wrong-field bug -- a positional or greedy
     # match writes the phone number into the country selector.
     (re.compile(r"phone\s*(country|code)|country\s*code|dial\s*code", re.I), "phone_country"),
+    # Not every field with "phone" in it wants the number. Workday's My
+    # Information page has Phone Extension and Phone Device Type beside it,
+    # and both were filled with 6693609914 -- a phone number recorded as an
+    # extension, and as a device type.
+    (re.compile(r"phone\s*(extension|ext\b|device|type)|extension\b", re.I), None),
     (re.compile(r"\bphone\b|\bmobile\b|\btelephone\b", re.I), "phone"),
     (re.compile(r"\blinked\s*in\b", re.I), "linkedin"),
     (re.compile(r"\bgithub\b", re.I), "github"),
@@ -62,9 +67,22 @@ _IDENTITY_MAP: list[tuple[re.Pattern[str], str]] = [
 
 # Screening-question patterns -> profile.screening key.
 _SCREENING_MAP: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"require.*(visa|employment).*sponsor|sponsorship.*(now|future)|need sponsorship", re.I), "requires_sponsorship_future"),
-    (re.compile(r"\bsponsorship\b", re.I), "requires_sponsorship_now"),
+    # Two different legal facts. "Will you now or in the future require
+    # sponsorship?" is the FUTURE question; "Do you require visa sponsorship?"
+    # is the NOW question. The old first pattern (`require.*visa.*sponsor`)
+    # matched both, so a candidate on OPT -- now: No, future: Yes -- had the
+    # present-tense question answered with the future answer.
+    (re.compile(r"(in the future|now or (will you )?in the future|future).{0,60}sponsor"
+                r"|sponsor.{0,40}\bfuture\b", re.I), "requires_sponsorship_future"),
+    (re.compile(r"\bsponsor(ship)?\b", re.I), "requires_sponsorship_now"),
     (re.compile(r"legally.*(authoriz|entitled).*work|work authoriz|authorized to work", re.I), "work_authorization"),
+    # Before citizenship, deliberately. Apex asks "You must be a U.S. Person
+    # because this position requires access to information subject to U.S.
+    # export controls. Are you a US Person? (Citizen, Green Card holder,
+    # etc.)" -- the word "Citizen" appears only as an example, and reading it
+    # as a nationality question answered a yes/no field with "Indian".
+    (re.compile(r"export control|\bitar\b|\bear\b\s+regulat|protected individual"
+                r"|u\.?s\.? person\b", re.I), "export_control_us_person"),
     (re.compile(r"\bcitizen(ship)?\b", re.I), "citizenship"),
     (re.compile(r"\bvisa status\b", re.I), "visa_status"),
     (re.compile(r"convicted|criminal|felony", re.I), "criminal_history"),
@@ -84,10 +102,74 @@ _SCREENING_MAP: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(ai|artificial intelligence)\s+policy|policy for application|acknowledge.{0,30}(policy|guidelines)", re.I), "policy_acknowledgement"),
     (re.compile(r"related to|family member.*employe", re.I), "related_to_employee"),
     (re.compile(r"professional licen[sc]e", re.I), "professional_license"),
+    (re.compile(r"graduat\w*\s*(date|year|term|month|semester)"
+                r"|(date|year|month|when)\b.{0,20}graduat"
+                r"|(expected|anticipated|planned)\s+graduation\b", re.I), "graduation"),
     (re.compile(r"(highest )?(level of )?education|degree", re.I), "education_degree"),
+    (re.compile(r"(available|earliest|preferred|desired).{0,12}(start|availab)"
+                r"|start date|when can you (start|begin)|date available", re.I),
+     "start_date"),
 ]
 
 _GPA = re.compile(r"\bgpa\b|grade point average", re.I)
+
+# What a closed custom dropdown reports as its only "option".
+_PLACEHOLDER_OPTION = re.compile(
+    r"^\s*(select|choose|please (select|choose)|pick one|--+|—|\.\.\.|)\s*(one|an option|\.\.\.|…)?\s*[.…]*\s*$",
+    re.I)
+
+
+# A question mark is not enough: "Do you require sponsorship?" is one
+# question. Two of them, or a follow-up clause, means a bare Yes is a
+# third of an answer.
+_MULTI_PART = re.compile(r"\?.*\?|\bif so\b|\band when\b|\bwhich one\b|"
+                         r"\bplease (explain|specify|describe)\b", re.I)
+
+
+def _asks_more_than_yes_no(label: str) -> bool:
+    return bool(_MULTI_PART.search(label or ""))
+
+
+_ASKS_EXPIRY = re.compile(r"\bexpir", re.I)
+
+
+def _sponsorship_prose(profile: Profile, needs: bool, label: str = "") -> str:
+    """Answer a compound sponsorship question from confirmed facts only.
+
+    The model never sees this: the sentence is assembled from what the
+    candidate himself confirmed, and his status goes in verbatim, so nothing
+    about his immigration status is paraphrased or invented.
+
+    A visa expiry date is not in the profile. Saying so is the honest answer
+    to that part of the question; inventing one would be a false statement to
+    an employer, and leaving it out silently gets the answer blocked as
+    incomplete.
+    """
+    if not needs:
+        return "No, I do not require visa sponsorship."
+    status = ""
+    if profile.can_answer("visa_status"):
+        status = str(profile.answer("visa_status").value).strip()
+    out = f"Yes. Current status: {status}." if status else "Yes, I require visa sponsorship."
+    if _ASKS_EXPIRY.search(label or ""):
+        out += " I can provide my exact visa and I-20 expiry dates on request."
+    return out
+
+
+def real_options(field: FormField) -> list[str]:
+    """The field's option labels, minus placeholders -- possibly nothing.
+
+    A react-select combobox renders its real options lazily, in a portal, only
+    once opened. Extracted from the closed DOM it reports exactly one option:
+    "Select...". Matching a confirmed answer against that list fails every
+    time, so the answer layer was flagging "'Yes' matches none of
+    ['Select...']" and giving up on fields the fill layer -- which opens the
+    menu and matches against what actually appears -- would have filled fine.
+
+    An empty return means "options unknown until fill time": pass the value
+    through and let `fill_combobox` resolve it live.
+    """
+    return [o for o in field.option_labels() if not _PLACEHOLDER_OPTION.match(o or "")]
 _SALARY = re.compile(r"salary|compensation|pay (expectation|range)|desired (pay|comp)", re.I)
 _YOE = re.compile(r"years? of (professional )?experience|how many years", re.I)
 
@@ -96,7 +178,7 @@ def _identity_value(profile: Profile, key: str) -> str:
     i = profile.identity
     return {
         "first_name": i.first_name, "last_name": i.last_name,
-        "full_name": i.full_name, "email": str(i.email), "phone": i.phone,
+        "full_name": i.full_name, "email": i.email_str, "phone": i.phone,
         "linkedin": i.linkedin or "", "github": i.github or "",
         "website": i.website or "", "city": i.location.city,
         "state": i.location.state, "country": i.location.country,
@@ -119,6 +201,10 @@ def classify(field: FormField) -> None:
             return
     for pat, key in _IDENTITY_MAP:
         if pat.search(label):
+            # A None key means the label matched something we must NOT fill
+            # from identity -- "Phone Extension" is not a phone number.
+            if key is None:
+                return
             field.profile_key = f"identity.{key}"
             return
     if _GPA.search(label):
@@ -144,7 +230,22 @@ def deterministic_answers(
         key = f.profile_key
 
         if key and key.startswith("identity."):
-            val = _identity_value(profile, key.split(".", 1)[1])
+            # A checkbox is a yes/no, not a place to put a value. HP IQ's
+            # "How did you hear about HP IQ?" group has a box labelled
+            # "LinkedIn", which matched identity.linkedin and was handed the
+            # profile URL -- a string, so it would have ticked the box for a
+            # source the candidate did not come from had the checkbox reader
+            # not refused it.
+            if f.kind in (FieldKind.CHECKBOX, FieldKind.CONSENT):
+                remaining.append(f)
+                continue
+            sub = key.split(".", 1)[1]
+            # A location autocomplete offers "San Jose, California, United
+            # States" beside seven other San Joses; the bare city ties with all
+            # of them and the matcher picked the Philippines.
+            if sub == "city" and f.kind is FieldKind.COMBOBOX:
+                sub = "work_address"
+            val = _identity_value(profile, sub)
             if val:
                 answers.append(ProposedAnswer(f.field_id, val, AnswerSource.PROFILE,
                                               1.0, "profile identity"))
@@ -165,6 +266,32 @@ def deterministic_answers(
                     answers.append(ProposedAnswer(f.field_id, s, AnswerSource.PROFILE,
                                                   0.9, "bolstering range"))
                     continue
+
+        elif key == "start_date":
+            # A date picker needs a date. "this month" is how the candidate
+            # wrote his availability, and the model refused to convert it
+            # rather than invent one -- right in principle, but it left a
+            # required field empty on every form that asks.
+            when = profile.earliest_start_date()
+            if when is not None:
+                answers.append(ProposedAnswer(
+                    f.field_id, when.isoformat(), AnswerSource.DERIVED, 0.9,
+                    f"earliest_start {profile.earliest_start!r} resolved against today"))
+                continue
+
+        elif key == "graduation":
+            # Nothing derived this, so the model composed "2028" -- which a
+            # date picker cannot parse. The profile states the date; a field
+            # that wants only the year gets the year back out in fill.
+            when = next((e.end for e in profile.education if e.end), None)
+            if when is not None:
+                val: Any = when.isoformat()
+                if real_options(f):
+                    chosen, _, _ = match_option(str(when.year), f.option_labels())
+                    val = chosen or str(when.year)
+                answers.append(ProposedAnswer(f.field_id, val, AnswerSource.PROFILE,
+                                              1.0, "profile education end date"))
+                continue
 
         elif key == "gpa":
             gpa = next((e.gpa for e in profile.education if e.gpa is not None), None)
@@ -210,21 +337,82 @@ def deterministic_answers(
                 continue
 
             v = ans.value
-            # A yes/no combobox with no scraped options still needs mapping;
-            # assume the conventional pair rather than typing "True".
-            if isinstance(v, bool) and not f.options and f.kind in (
+            # A nationality is not an answer to "are you a US citizen?". The
+            # profile records citizenship as "Indian"; on a yes/no attestation
+            # that matched nothing, and inferring "No" from it would be this
+            # code deciding a legal question about someone's status. Hand it
+            # back instead.
+            if key == "citizenship" and isinstance(v, str):
+                yes_no = {o.lower() for o in real_options(f)} <= {"yes", "no"}
+                if (yes_no and real_options(f)) or f.kind in (
+                        FieldKind.RADIO, FieldKind.CHECKBOX):
+                    if v.strip().lower() not in ("yes", "no"):
+                        answers.append(ProposedAnswer(
+                            f.field_id, None, AnswerSource.PROFILE, 0.0,
+                            f"profile records citizenship as {v!r}, which does not "
+                            f"answer a yes/no question about a specific country",
+                            needs_human=True,
+                            blocked_reason=(
+                                f"'{f.label[:70]}' asks yes/no; the profile holds "
+                                f"a nationality")))
+                        continue
+
+            # A work-authorisation question often offers qualified variants:
+            # "Yes, and I will not need sponsorship" beside "Yes, but I will
+            # need sponsorship in the future". Answering the bare "Yes" picks
+            # whichever the matcher reaches first and then reads as a mismatch
+            # at verification. The candidate's own sponsorship answers say
+            # which variant is true, so use them.
+            if key == "work_authorization" and v is True:
+                opts_now = real_options(f)
+                qualified = [o for o in opts_now if re.match(r"\s*yes\b", o, re.I)
+                             and re.search(r"sponsor", o, re.I)]
+                if len(opts_now) > 2 and qualified:
+                    needs = (profile.answer("requires_sponsorship_future").value
+                             or profile.answer("requires_sponsorship_now").value)
+                    wants_need = bool(needs)
+                    pick = [o for o in qualified
+                            if bool(re.search(r"\b(not|no|won'?t|do not)\b.{0,20}"
+                                              r"(need|require)|(need|require)\w*\s+no\b",
+                                              o, re.I)) is not wants_need]
+                    if len(pick) == 1:
+                        answers.append(ProposedAnswer(
+                            f.field_id, pick[0], AnswerSource.PROFILE, 1.0,
+                            "confirmed work_authorization, qualified by the "
+                            "candidate's confirmed sponsorship answer"))
+                        continue
+
+            if key == "ethnicity" and re.search(r"hispanic|latino", f.label, re.I) \
+                    and isinstance(v, str) and v.lower() not in ("yes", "no"):
+                # The question is yes/no; the profile stores the ethnicity.
+                v = bool(re.search(r"hispanic|latino", v, re.I))
+            opts = real_options(f)
+            # A yes/no dropdown whose options are unknown until it is opened
+            # still needs mapping; use the conventional pair, never "True".
+            if isinstance(v, bool) and not opts and f.kind in (
                     FieldKind.COMBOBOX, FieldKind.SELECT, FieldKind.RADIO):
                 v = "Yes" if v else "No"
-            if f.options:
-                chosen = match_boolean(v, f.option_labels()) if isinstance(v, bool) else None
+            # A free-text screening question is usually several questions in
+            # one. Exa asks "Do you require Visa sponsorship? If so, which
+            # one? And when does your Visa expire?" -- a bare "Yes" answers a
+            # third of it, and the verifier blocked it as uninformative on a
+            # required field the healer may not rewrite. Every fact here is
+            # one the candidate confirmed; only the sentence is composed.
+            if isinstance(v, bool) and not opts and f.kind in (
+                    FieldKind.TEXT, FieldKind.TEXTAREA) \
+                    and key.startswith("requires_sponsorship") \
+                    and _asks_more_than_yes_no(f.label):
+                v = _sponsorship_prose(profile, v, f.label)
+            if opts:
+                chosen = match_boolean(v, opts) if isinstance(v, bool) else None
                 if chosen is None:
-                    chosen, _, _ = match_option(str(v), f.option_labels())
+                    chosen, _, _ = match_option(str(v), opts)
                 if chosen is None:
                     answers.append(ProposedAnswer(
                         f.field_id, None, AnswerSource.PROFILE, 0.0,
                         "confirmed value does not map to any offered option",
                         needs_human=True,
-                        blocked_reason=f"'{v}' matches none of {f.option_labels()[:6]}",
+                        blocked_reason=f"'{v}' matches none of {opts[:6]}",
                     ))
                     continue
                 v = chosen
@@ -306,6 +494,9 @@ def profile_digest(profile: Profile) -> str:
     if p.awards:
         lines += ["", "AWARDS & SELECTIVE PROGRAMS:"]
         lines += [f"- {x}" for x in p.awards]
+    if p.certifications:
+        lines += ["", "CERTIFICATIONS:"]
+        lines += [f"- {x}" for x in p.certifications]
     if p.summary:
         lines += ["", "SUMMARY:", p.summary]
     lines += ["", "PREFERENCES (usable for non-legal questions):", p.preferences_digest()]
@@ -369,6 +560,12 @@ def model_answers(
     by_id = {f.field_id: f for f in fields}
     out: list[ProposedAnswer] = []
     for a in data.get("answers", []):
+        if not isinstance(a, dict):
+            # Forced tool use does not guarantee the shape inside an array. One
+            # run came back with bare strings here and the whole application
+            # crashed after the resume was already tailored and rendered.
+            log.warning("answer.malformed_item", got=str(a)[:80])
+            continue
         fid = a.get("field_id", "")
         f = by_id.get(fid)
         if f is None:
@@ -389,10 +586,13 @@ def model_answers(
             continue
 
         v = a["value"]
-        if f.options:
-            chosen, score, _ = match_option(str(v), f.option_labels())
+        opts = real_options(f)
+        if isinstance(v, bool) and not opts:
+            v = "Yes" if v else "No"
+        if opts:
+            chosen, score, _ = match_option(str(v), opts)
             if chosen is None and isinstance(v, bool):
-                chosen = match_boolean(v, f.option_labels())
+                chosen = match_boolean(v, opts)
             if chosen is None:
                 out.append(ProposedAnswer(fid, None, AnswerSource.COMPOSED, 0.0,
                                           "no option matched", needs_human=True,
