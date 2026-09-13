@@ -2,6 +2,10 @@
 .env
 config/profile.yaml
 config/*.local.yaml
+# Editor backups: `config/profile.<timestamp>.yaml`, same personal data as the
+# original. Broad on purpose -- only the example file is meant to be tracked.
+config/*.yaml
+!config/profile.example.yaml
 credentials.json
 token.json
 *_client_secret.json
