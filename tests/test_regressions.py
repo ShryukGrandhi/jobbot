@@ -920,9 +920,14 @@ def test_a_confirmed_yes_ticks_a_lone_consent_checkbox() -> None:
     arb2 = FormField("b", "Agreement to Arbitrate", FieldKind.CONSENT, required=True)
     pol = FormField("c", "I acknowledge the AI policy", FieldKind.CHECKBOX,
                     options=[FieldOption("I acknowledge the AI policy")])
-    answers, leftover = deterministic_answers(prof, ParsedForm(fields=[arb, arb2, pol]))
+    # the live Greenhouse shape: a combobox whose single option is the sentence
+    sentence = "I have read and agree to the arbitration agreement"
+    combo = FormField("d", "Agreement to Arbitrate", FieldKind.COMBOBOX, required=True,
+                      options=[FieldOption(sentence)])
+    answers, leftover = deterministic_answers(prof, ParsedForm(fields=[arb, arb2, pol, combo]))
     by = {a.field_id: a for a in answers}
     assert by["a"].value is True and by["a"].submittable
     assert by["b"].value is True and by["b"].submittable
     assert by["c"].value is False, "a confirmed No leaves the box alone"
+    assert by["d"].value == sentence and by["d"].submittable, "a Yes picks the only option"
     assert leftover == []

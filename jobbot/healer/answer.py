@@ -156,6 +156,9 @@ def _sponsorship_prose(profile: Profile, needs: bool, label: str = "") -> str:
     return out
 
 
+# Screening keys that are an agreement rather than a fact about the candidate.
+_CONSENT_KEYS = {"arbitration_agreement", "policy_acknowledgement",
+                 "background_check_consent", "drug_test_consent"}
 _TRUTHY = {"yes", "y", "true", "agree", "i agree", "accept", "i accept",
            "acknowledge", "acknowledged", "i acknowledge", "confirm", "confirmed"}
 
@@ -413,6 +416,22 @@ def deterministic_answers(
                     and key.startswith("requires_sponsorship") \
                     and _asks_more_than_yes_no(f.label):
                 v = _sponsorship_prose(profile, v, f.label)
+            if key in _CONSENT_KEYS and len(opts) == 1 and f.kind not in (
+                    FieldKind.CHECKBOX, FieldKind.CONSENT):
+                # Greenhouse renders "Agreement to Arbitrate" as a dropdown
+                # with exactly one choice: the agreement sentence. A confirmed
+                # "Yes" matches none of that text; it means "choose it".
+                if _truthy(v):
+                    answers.append(ProposedAnswer(
+                        f.field_id, opts[0], AnswerSource.PROFILE, 1.0,
+                        f"confirmed profile.screening.{key}: the only option"))
+                else:
+                    answers.append(ProposedAnswer(
+                        f.field_id, None, AnswerSource.PROFILE, 0.0,
+                        f"profile.screening.{key} is No; the only option is consent",
+                        needs_human=True,
+                        blocked_reason=f"'{f.label[:70]}' offers only consent and the profile says No"))
+                continue
             if f.kind in (FieldKind.CHECKBOX, FieldKind.CONSENT) and len(opts) <= 1:
                 # A lone consent box ("Agreement to Arbitrate", "I acknowledge
                 # the policy"): its one option is the sentence itself, so a
