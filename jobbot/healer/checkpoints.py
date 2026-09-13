@@ -488,6 +488,12 @@ async def heal(
                 continue
             value: Any = None
             source, confidence, why = AnswerSource.COMPOSED, 0.6, "healer fix"
+            if f.profile_key is None:
+                # The fill stage classifies every field in place; a field that
+                # reaches the healer unclassified (a late-appearing step, a
+                # test) must still be recognised as legally significant.
+                from jobbot.healer.answer import classify
+                classify(f)
             if f.profile_key in LEGALLY_SIGNIFICANT:
                 # Never let the healer COMPOSE a legally significant answer.
                 #

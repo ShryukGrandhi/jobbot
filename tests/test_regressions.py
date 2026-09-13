@@ -840,3 +840,61 @@ def test_an_application_is_retried_in_its_own_tab_until_it_settles(tmp_path, mon
     script[:] = [RuntimeError("Target page, context or browser has been closed")]
     r = asyncio.run(orch._apply_with_retries(dead, Post(), audit, audit / "s"))
     assert r.reason.startswith("tab died")
+
+
+def test_healer_reapplies_profile_values_and_snaps_declines(monkeypatch, tmp_path) -> None:
+    """Two blockers seen on a live Greenhouse form, both previously unhealable.
+
+    "Agreement to Arbitrate" is legally significant, so the healer refused to
+    touch it -- even though the profile held a confirmed "Yes" and the box had
+    simply not taken the first click. And for "Gender" the verifier suggested
+    "I do not wish to answer" where the form's option is "Decline To Self
+    Identify"; the filler resolves that, the healer did not. Both must heal
+    now, the first from the profile and never from the model.
+    """
+    import asyncio
+
+    from jobbot.forms import fill as fill_mod
+    from jobbot.forms.model import (AnswerSource, FieldKind, FieldOption, FormField,
+                                    ParsedForm, Verification, VerificationIssue)
+    from jobbot.healer import checkpoints as ck
+    from jobbot.profile import Profile
+
+    arb = FormField("arb", "Agreement to Arbitrate", FieldKind.CONSENT, required=True)
+    gender = FormField("g", "Gender", FieldKind.SELECT, options=[
+        FieldOption("Male"), FieldOption("Female"), FieldOption("Decline To Self Identify")])
+    form = ParsedForm(fields=[arb, gender])
+    prof = Profile.model_validate({
+        "identity": {"first_name": "J", "last_name": "D", "email": "j@d.com"},
+        "screening": {"arbitration_agreement": "Yes"},
+    })
+
+    rounds = []
+
+    async def fake_verify(page, llm, profile, form_, answers, shots, *, round_no):
+        rounds.append(round_no)
+        if round_no == 1:
+            return Verification(issues=[
+                VerificationIssue("arb", "Agreement to Arbitrate", "unchecked", "blocker", None),
+                VerificationIssue("g", "Gender", "empty", "blocker", "I do not wish to answer"),
+            ]), None
+        return Verification(ready_to_submit=True), None
+
+    applied = []
+
+    async def fake_apply(page, f, patch, resume_path=None):
+        applied.append((f.field_id, patch))
+        return True
+
+    monkeypatch.setattr(ck, "checkpoint_verify", fake_verify)
+    monkeypatch.setattr(fill_mod, "apply_answer", fake_apply)
+
+    answers: list = []
+    v, n = asyncio.run(ck.heal(None, None, prof, form, answers, tmp_path, max_rounds=3))
+    assert v.ready_to_submit and n == 2 and rounds == [1, 2]
+
+    by = {fid: patch for fid, patch in applied}
+    assert by["arb"].source is AnswerSource.PROFILE, "the candidate's own answer, not the model's"
+    assert by["arb"].value not in (None, "", False)
+    assert by["g"].value == "Decline To Self Identify"
+    assert {a.field_id for a in answers} == {"arb", "g"}, "healed values reach the ledger"
