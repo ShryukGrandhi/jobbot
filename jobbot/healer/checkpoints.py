@@ -66,10 +66,15 @@ class Outcome:
     lessons: list[dict[str, str]] = dc_field(default_factory=list)
 
 
+# Two kinds of marker. Anywhere in the string: things no real answer
+# contains. Only at the START: possessives and adjectives that open a
+# description ("the candidate's phone", "your real address") but also occur
+# mid-sentence in every honest essay ("core to your stack") -- matching those
+# anywhere rejected a 1,250-character cover-letter answer as a placeholder.
 _DESCRIPTION_MARKERS = re.compile(
-    r"candidate'?s|the user'?s|real |actual |valid |their |your |"
     r"\bplaceholder\b|\bTBD\b|\bN/?A\b|<[^>]+>|\[[^\]]+\]|"
-    r"should be|must be|needs to be|enter (a|the|your)",
+    r"\bshould be\b|\bmust be\b|\bneeds to be\b|\benter (a|an|the|your)\b|"
+    r"^\s*(the |a |an )?(candidate'?s?|user'?s?|applicant'?s?|real|actual|valid|their|your)\b",
     re.I,
 )
 
@@ -339,6 +344,61 @@ def _confirmed_screening(profile) -> str:
             + "\n".join(lines))
 
 
+
+_TRUNCATED = re.compile(r"truncat|cut off|incomplete|partial|not fully", re.I)
+
+
+def _norm_ws(v: object) -> str:
+    return re.sub(r"\s+", " ", str(v or "")).strip()
+
+
+async def _dom_value(page: Any, f: FormField) -> str:
+    """What the control actually holds, straight from the DOM."""
+    if page is None or not f.selector:
+        return ""
+    try:
+        return await page.locator(f.selector).first.input_value(timeout=2000) or ""
+    except Exception:  # noqa: BLE001
+        try:
+            return await page.evaluate(
+                "(sel) => { const e = document.querySelector(sel); "
+                "return e ? (e.value || e.textContent || '') : ''; }", f.selector)
+        except Exception:  # noqa: BLE001
+            return ""
+
+
+async def _dom_truth(page: Any, form: ParsedForm, answers: list[ProposedAnswer],
+                     issues: list[VerificationIssue]) -> tuple[list[VerificationIssue], set[str]]:
+    """Let the DOM overrule vision on "truncated" text.
+
+    A long essay in a textarea shows its first few lines; the vision pass
+    reads that as "visibly truncated" and blocks. Three heal rounds then
+    re-type the same complete text and get the same verdict. The DOM holds
+    the whole value, so when it matches what we meant to type the issue is
+    a warning, not a blocker. Returns the issues and the labels confirmed.
+    """
+    by_id = {f.field_id: f for f in form.fields}
+    intended = {a.field_id: _norm_ws(a.value) for a in answers if a.submittable}
+    out: list[VerificationIssue] = []
+    confirmed: set[str] = set()
+    for i in issues:
+        f = by_id.get(i.field_id)
+        if (i.severity == "blocker" and f is not None
+                and f.kind in (FieldKind.TEXT, FieldKind.TEXTAREA)
+                and _TRUNCATED.search(i.problem or "") and i.field_id in intended):
+            dom = _norm_ws(await _dom_value(page, f))
+            want = intended[i.field_id]
+            if dom and (dom == want or (len(dom) >= 0.95 * len(want)
+                                        and want.startswith(dom[:200]))):
+                log.info("verify.dom_truth", label=f.label[:50], chars=len(dom))
+                i = VerificationIssue(i.field_id, i.label,
+                                      (i.problem or "") + " (DOM holds the full value; the box scrolls)",
+                                      "warning", i.suggested_value)
+                confirmed.add(f.label.strip().lower()[:60])
+        out.append(i)
+    return out, confirmed
+
+
 async def checkpoint_verify(
     page: Any, llm: LLMClient, profile: Profile, form: ParsedForm,
     answers: list[ProposedAnswer], shots_dir: str | Path, round_no: int = 0,
@@ -418,11 +478,21 @@ async def checkpoint_verify(
             suggested_value=i.get("suggested_value"),
         ))
 
+    issues, confirmed = await _dom_truth(page, form, answers, issues)
+    unfilled = [u for u in (d.get("unfilled_required", []) or [])
+                if str(u).strip().lower()[:60] not in confirmed]
+    verrs = d.get("validation_errors", []) or []
+    ready = bool(d.get("ready_to_submit"))
+    if confirmed and not ready and not verrs and not unfilled \
+            and not any(i.severity == "blocker" for i in issues):
+        # The only thing holding the verdict back was vision misreading a
+        # scrolled box; the DOM says the value is whole.
+        ready = True
     v = Verification(
-        ready_to_submit=bool(d.get("ready_to_submit")),
+        ready_to_submit=ready,
         issues=issues,
-        unfilled_required=d.get("unfilled_required", []) or [],
-        validation_errors=d.get("validation_errors", []) or [],
+        unfilled_required=unfilled,
+        validation_errors=verrs,
         summary=d.get("summary", ""),
     )
     log.info("checkpoint2.verified", round=round_no, ready=v.ready_to_submit,

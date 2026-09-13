@@ -931,3 +931,58 @@ def test_a_confirmed_yes_ticks_a_lone_consent_checkbox() -> None:
     assert by["c"].value is False, "a confirmed No leaves the box alone"
     assert by["d"].value == sentence and by["d"].submittable, "a Yes picks the only option"
     assert leftover == []
+
+
+def test_an_essay_mentioning_your_stack_is_not_a_placeholder() -> None:
+    """The healer rejected a real 1,250-character "Why us?" answer because
+    the placeholder regex matched "your " mid-sentence. Descriptions of a
+    value open with a possessive or an adjective; real prose merely contains
+    them.
+    """
+    from jobbot.healer.checkpoints import _looks_like_a_description as desc
+
+    assert not desc("Anthropic is building infrastructure for research that matters. "
+                    "I am proficient in Python, Go and PostgreSQL, which seem to be "
+                    "core to your stack. The feedback loop you describe is compelling.")
+    assert not desc("I rebuilt their ingestion path and cut p99 latency to 95ms.")
+    assert desc("Candidate's real phone number")
+    assert desc("your current address")
+    assert desc("The actual value should be entered here")
+    assert desc("[insert company name]")
+    assert desc("TBD")
+    assert desc("")
+
+
+def test_the_dom_overrules_vision_on_a_scrolled_textarea() -> None:
+    """A 1,250-character essay shows four lines in its box. Vision called it
+    "visibly truncated" and blocked; three heal rounds re-typed the same full
+    text and got the same verdict. The DOM knows the whole value.
+    """
+    import asyncio
+
+    from jobbot.forms.model import (AnswerSource, FieldKind, FormField, ParsedForm,
+                                    ProposedAnswer, VerificationIssue)
+    from jobbot.healer.checkpoints import _dom_truth
+
+    essay = "Anthropic is building infrastructure for research that matters. " * 20
+    why = FormField("q1", "Why Anthropic?", FieldKind.TEXTAREA, required=True, selector="#q1")
+    phone = FormField("q2", "Phone", FieldKind.PHONE, required=True, selector="#q2")
+    form = ParsedForm(fields=[why, phone])
+    answers = [ProposedAnswer("q1", essay, AnswerSource.COMPOSED, 1.0, "x"),
+               ProposedAnswer("q2", "555", AnswerSource.PROFILE, 1.0, "x")]
+
+    class Loc:
+        def __init__(self, v): self.v = v; self.first = self
+        async def input_value(self, timeout=0): return self.v
+
+    class Page:
+        def locator(self, sel): return Loc(essay if sel == "#q1" else "55")
+
+    issues = [VerificationIssue("q1", "Why Anthropic?", "The answer is visibly truncated.", "blocker", essay),
+              VerificationIssue("q2", "Phone", "visibly truncated", "blocker", "555"),
+              VerificationIssue("q1", "Why Anthropic?", "empty", "blocker", None)]
+    out, confirmed = asyncio.run(_dom_truth(Page(), form, answers, issues))
+    assert out[0].severity == "warning" and "DOM holds" in out[0].problem
+    assert out[1].severity == "blocker", "a phone box is not a scrolled essay"
+    assert out[2].severity == "blocker", "only truncation claims are overruled"
+    assert confirmed == {"why anthropic?"}
