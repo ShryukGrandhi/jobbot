@@ -986,3 +986,54 @@ def test_the_dom_overrules_vision_on_a_scrolled_textarea() -> None:
     assert out[1].severity == "blocker", "a phone box is not a scrolled essay"
     assert out[2].severity == "blocker", "only truncation claims are overruled"
     assert confirmed == {"why anthropic?"}
+
+
+def test_voluntary_self_id_is_declined_not_invented(monkeypatch, tmp_path) -> None:
+    """Gender and race are optional EEO fields the verifier lists in
+    unfilled_required (no field_id, so the blocker loop never sees them). The
+    profile holds no gender or race and must not. Declining is the honest
+    non-answer; veteran/disability status, being legally significant, are left
+    to the profile.
+    """
+    import asyncio
+
+    from jobbot.forms import fill as fill_mod
+    from jobbot.forms.model import (AnswerSource, FieldKind, FieldOption, FormField,
+                                    ParsedForm, Verification)
+    from jobbot.healer import checkpoints as ck
+    from jobbot.profile import Profile
+
+    gender = FormField("g", "Gender", FieldKind.SELECT, options=[
+        FieldOption("Male"), FieldOption("Female"), FieldOption("Decline To Self Identify")])
+    race = FormField("r", "Please identify your race", FieldKind.SELECT, options=[
+        FieldOption("Asian"), FieldOption("White"), FieldOption("Decline To Self Identify")])
+    vet = FormField("v", "Veteran Status", FieldKind.SELECT, options=[
+        FieldOption("I am a protected veteran"),
+        FieldOption("I am not a protected veteran"), FieldOption("Decline To Self Identify")])
+    form = ParsedForm(fields=[gender, race, vet])
+    prof = Profile.model_validate({
+        "identity": {"first_name": "J", "last_name": "D", "email": "j@d.com"},
+        "screening": {"veteran_status": "I am not a protected veteran"}})
+
+    async def fake_verify(page, llm, profile, form_, answers, shots, *, round_no):
+        if round_no == 1:
+            return Verification(ready_to_submit=False,
+                                unfilled_required=["Gender", "Please identify your race",
+                                                   "Veteran Status"]), None
+        return Verification(ready_to_submit=True), None
+
+    applied = []
+
+    async def fake_apply(page, f, patch, resume_path=None):
+        applied.append((f.field_id, patch.value)); return True
+
+    monkeypatch.setattr(ck, "checkpoint_verify", fake_verify)
+    monkeypatch.setattr(fill_mod, "apply_answer", fake_apply)
+
+    answers: list = []
+    v, n = asyncio.run(ck.heal(None, None, prof, form, answers, tmp_path, max_rounds=3))
+    by = dict(applied)
+    assert by["g"] == "Decline To Self Identify"
+    assert by["r"] == "Decline To Self Identify"
+    assert "v" not in by, "veteran status is legally significant; the profile owns it"
+    assert v.ready_to_submit

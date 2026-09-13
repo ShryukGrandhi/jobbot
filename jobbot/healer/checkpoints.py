@@ -646,6 +646,41 @@ async def heal(
                 answers[:] = [a for a in answers if a.field_id != f.field_id] + [patch]
                 fixed += 1
 
+        # Voluntary self-identification the candidate never provided.
+        #
+        # Greenhouse's EEO block (Gender, "Please identify your race",
+        # Hispanic/Latino) is optional, but the verifier lists it in
+        # unfilled_required, and those carry no field_id so the blocker loop
+        # above never sees them. The profile holds no gender or race, and it
+        # must not: this is not a fact to invent. Declining is the honest,
+        # privacy-preserving non-answer every such field offers, and it is not
+        # legally significant -- unlike veteran or disability status, which are
+        # answered only from the profile and are skipped here.
+        label_to_field = {f.label.strip().lower(): f for f in form.fields}
+        for label in v.unfilled_required:
+            key = str(label).strip().lower()
+            f = label_to_field.get(key) or next(
+                (ff for lab, ff in label_to_field.items()
+                 if key and (key in lab or lab in key)), None)
+            if f is None or not f.options:
+                continue
+            if any(a.field_id == f.field_id and a.submittable for a in answers):
+                continue
+            if f.profile_key is None:
+                from jobbot.healer.answer import classify
+                classify(f)
+            if f.profile_key in LEGALLY_SIGNIFICANT:
+                continue
+            decline = match_decline(f.option_labels())
+            if decline is None:
+                continue
+            patch = ProposedAnswer(f.field_id, decline, AnswerSource.DERIVED, 0.9,
+                                   "voluntary self-ID left unprovided; declined, not invented")
+            if await apply_answer(page, f, patch, resume_path=resume_path):
+                answers[:] = [a for a in answers if a.field_id != f.field_id] + [patch]
+                fixed += 1
+                log.info("heal.declined_self_id", label=f.label[:50], chose=decline)
+
         log.info("heal.round", round=rounds, blockers=len(v.blockers), fixed=fixed)
         if fixed == 0:
             break
