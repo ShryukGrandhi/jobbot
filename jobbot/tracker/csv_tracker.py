@@ -24,6 +24,8 @@ from typing import Iterator
 
 import structlog
 
+from jobbot.tracker.filelock import exclusive
+
 log = structlog.get_logger(__name__)
 
 

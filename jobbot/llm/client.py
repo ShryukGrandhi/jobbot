@@ -213,9 +213,10 @@ class LLMClient:
                 max_retries=0,   # tenacity owns retries
             )
         elif self.provider == "anthropic":
-            key = os.environ.get("ANTHROPIC_API_KEY")
-            if not key:
-                raise LLMError("JOBBOT_LLM_PROVIDER=anthropic requires ANTHROPIC_API_KEY")
+            key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if not key or key.endswith("..."):   # .env.example ships "sk-ant-..."
+                raise LLMError("JOBBOT_LLM_PROVIDER=anthropic requires a real "
+                               "ANTHROPIC_API_KEY in .env (or JOBBOT_LLM_PROVIDER=gemini)")
             self.client = Anthropic(
                 api_key=key,
                 timeout=LLM_TIMEOUT_S,

@@ -675,3 +675,28 @@ def test_a_rate_limit_is_not_retried() -> None:
     # An ordinary timeout is still worth another go.
     assert _worth_retrying(ApplicationResult(
         "oracle:2", Status.UNREACHABLE.value, "navigation timeout"))
+
+
+def test_both_ledgers_round_trip_through_the_file_lock(tmp_path) -> None:
+    """The trackers lock a sidecar file around every write.
+
+    The lock helper was swapped for a cross-platform one and the import was
+    added to one tracker but not the other; nothing exercised the on-disk
+    path, so the first real run died with NameError inside upsert().
+    """
+    from jobbot.tracker.answers_csv import AnswerLog
+    from jobbot.tracker.csv_tracker import Application, Status, Tracker
+
+    t = Tracker(tmp_path / "applications.csv")
+    t.upsert(Application(job_id="gh:1", company="Acme", title="SWE",
+                         ats="greenhouse", status=Status.DISCOVERED.value))
+    t.upsert(Application(job_id="gh:1", company="Acme", title="SWE",
+                         ats="greenhouse", status=Status.FILTERED_OUT.value))
+    rows = t.all()
+    assert len(rows) == 1 and rows[0].status == Status.FILTERED_OUT.value
+
+    a = AnswerLog(tmp_path / "answers.csv")
+    n = a.record(job_id="gh:1", company="Acme", title="SWE", ats="greenhouse",
+                 job_url="https://x", answers=[{"label": "First Name", "value": "Jane"}])
+    assert n == 1 and a.for_job("gh:1")[0]["answer"] == "Jane"
+    assert (tmp_path / "applications.lock").exists()
