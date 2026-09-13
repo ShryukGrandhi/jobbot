@@ -138,8 +138,8 @@ class BrowserLive:
                         title=self._title_cache.get(page, ""), at=time.time())
 
         cdp.on("Page.screencastFrame", lambda p: asyncio.ensure_future(ack(p)))
-        page.on("close", lambda: asyncio.ensure_future(self._detach(page)))
-        page.on("load", lambda: asyncio.ensure_future(self._refresh_title(page)))
+        page.on("close", lambda *_: asyncio.ensure_future(self._detach(page)))
+        page.on("load", lambda *_: asyncio.ensure_future(self._refresh_title(page)))
         await self._show(page)
 
     _title_cache: dict[Any, str] = {}
