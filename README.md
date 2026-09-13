@@ -92,6 +92,7 @@ jobbot check                    readiness: profile, llm, github, gmail, tracker
 jobbot discover --source ...    find and rank jobs, no browser
 jobbot run --source ... [--submit]
 jobbot report <audit-dir>       every answer entered, field by field
+jobbot dashboard                local web view of every run (read-only)
 jobbot ats-test --pdf x.pdf     score a resume, optionally against a live parser
 jobbot github-auth              one-time consent to create repos
 jobbot stats
