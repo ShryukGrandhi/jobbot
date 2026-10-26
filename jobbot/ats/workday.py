@@ -209,11 +209,18 @@ async def _sign_in(page: Any, username: str, password: str) -> tuple[bool, str]:
     err = await _text(page, A["error"])
     if err:
         return False, err[:200]
-    if await _at_sign_in_gate(page):
-        # No error text, but we are demonstrably still outside. Saying
-        # signed_in=True here is what walked the run into a gated form.
-        return False, "sign-in did not take: still at the sign-in gate"
-    return True, ""
+    for _ in range(8):
+        # The sign-in modal fades out over the Create Account form, whose password field still matches
+        # the gate test for a few seconds (Cisco 8305): give Workday time before calling it a failure.
+        if not await _at_sign_in_gate(page):
+            return True, ""
+        err = await _text(page, A["error"])
+        if err:
+            return False, err[:200]
+        await asyncio.sleep(1.5)
+    # No error text, but we are demonstrably still outside. Saying
+    # signed_in=True here is what walked the run into a gated form.
+    return False, "sign-in did not take: still at the sign-in gate"
 
 
 async def start_application(page: Any) -> bool:
