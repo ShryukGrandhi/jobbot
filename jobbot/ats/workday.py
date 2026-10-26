@@ -169,7 +169,7 @@ async def _fill_when_ready(page: Any, sel: str, value: str,
 
 async def _at_sign_in_gate(page: Any) -> bool:
     """Is a sign-in still standing between us and the application?"""
-    for sel in (A["password"], A["signin_submit"]):
+    for sel in (A["password"], A["signin_submit"], "[data-automation-id='SignInWithEmailButton']"):
         try:
             if await page.locator(sel).first.is_visible(timeout=1500):
                 return True
@@ -197,6 +197,12 @@ async def _sign_in(page: Any, username: str, password: str) -> tuple[bool, str]:
     if on_create_form or not email_here:
         await _click_first(page, [A["sign_in_link"], "a:has-text('Sign In')"], timeout=4000)
         await cap.settle(page, quiet_ms=800)
+    # Newer tenants open on "Sign in with Google / LinkedIn / Sign in with email": the form is behind the email one.
+    with contextlib.suppress(Exception):
+        chooser = page.locator("[data-automation-id='SignInWithEmailButton']").first
+        if await chooser.is_visible(timeout=1500):
+            await chooser.click()
+            await cap.settle(page, quiet_ms=800)
     try:
         await _fill_when_ready(page, A["email"], username)
         await _fill_when_ready(page, A["password"], password)
@@ -207,6 +213,20 @@ async def _sign_in(page: Any, username: str, password: str) -> tuple[bool, str]:
     await cap.settle(page, quiet_ms=1500)
 
     err = await _text(page, A["error"])
+    if err and re.search(r"verif", err, re.I) and not getattr(_sign_in, "_verifying", False):
+        # "Please verify your account": open the link Workday emailed (read-only Mail.app), then sign in again.
+        from jobbot.mail.gmail import wait_for_link
+        link = await asyncio.to_thread(wait_for_link, from_contains="workday", newer_than_ts=time.time() - 900,
+                                       timeout_s=180)
+        if link:
+            log.info("workday.verify_link_opened")
+            await page.goto(link, wait_until="domcontentloaded")
+            await cap.settle(page, quiet_ms=1500)
+            _sign_in._verifying = True
+            try:
+                return await _sign_in(page, username, password)
+            finally:
+                _sign_in._verifying = False
     if err:
         return False, err[:200]
     for _ in range(8):
@@ -221,6 +241,54 @@ async def _sign_in(page: Any, username: str, password: str) -> tuple[bool, str]:
     # No error text, but we are demonstrably still outside. Saying
     # signed_in=True here is what walked the run into a gated form.
     return False, "sign-in did not take: still at the sign-in gate"
+
+
+async def _reset_password(page: Any, tenant: str, email: str) -> str:
+    """Workday "Forgot your password?": request the reset email, open its link (read-only mail access), set a
+    new generated password, save it to the vault. Returns the new password, or "" if any step fails."""
+    from jobbot.mail.gmail import wait_for_link
+    back = page.url
+    if not await _click_first(page, ["[data-automation-id='forgotPasswordLink']", "button:has-text('Forgot your password')",
+                                     "a:has-text('Forgot your password')"], timeout=4000):
+        log.info("workday.reset_no_link", tenant=tenant)
+        return ""
+    await cap.settle(page, quiet_ms=800)
+    try:
+        await _fill_when_ready(page, A["email"], email)
+    except Exception:  # noqa: BLE001
+        return ""
+    sent = time.time() - 10
+    await _click_first(page, ["[data-automation-id='resetPasswordSubmitButton']", "button:has-text('Reset Password')",
+                              "button:has-text('Submit')", "[data-automation-id='click_filter']"], timeout=4000)
+    link = await asyncio.to_thread(wait_for_link, from_contains="workday", newer_than_ts=sent, timeout_s=200,
+                                   link_re=r"reset|password|token|passwordreset")
+    if not link:
+        log.info("workday.reset_no_email", tenant=tenant)
+        return ""
+    await page.goto(link, wait_until="domcontentloaded")
+    await cap.settle(page, quiet_ms=1500)
+    new_pw = vault.generate_password()
+    try:
+        await _fill_when_ready(page, A["password"], new_pw)
+        if await page.locator(A["verify_password"]).count():
+            await _fill_when_ready(page, A["verify_password"], new_pw)
+    except Exception as exc:  # noqa: BLE001
+        log.info("workday.reset_form_missing", tenant=tenant, error=str(exc)[:120])
+        return ""
+    await _click_first(page, ["[data-automation-id='resetPasswordSubmitButton']", A["signin_submit"],
+                              "button:has-text('Reset Password')", "button:has-text('Submit')",
+                              "[data-automation-id='click_filter']"], timeout=4000)
+    await cap.settle(page, quiet_ms=1500)
+    err = await _text(page, A["error"])
+    if err:
+        log.info("workday.reset_refused", tenant=tenant, error=err[:120])
+        return ""
+    vault.save("workday", tenant, email, new_pw)
+    log.info("workday.password_reset", tenant=tenant)
+    with contextlib.suppress(Exception):
+        await page.goto(back, wait_until="domcontentloaded")
+        await cap.settle(page, quiet_ms=1200)
+    return new_pw
 
 
 async def start_application(page: Any) -> bool:
@@ -275,6 +343,14 @@ async def ensure_account(
         if ok:
             return AccountResult(created=False, signed_in=True,
                                  username=existing.username)
+        if re.search(r"wrong email address or password|account might be locked", err or "", re.I) and gmail_enabled:
+            # The password we hold does not open the account (a run stopped between creating the account and
+            # saving its password): reset it through the emailed link and save the new one.
+            new_pw = await _reset_password(page, tenant, existing.username)
+            if new_pw:
+                ok, err = await _sign_in(page, existing.username, new_pw)
+                if ok:
+                    return AccountResult(created=False, signed_in=True, username=existing.username)
         # The account exists on the employer's site and the password we hold
         # does not open it -- which is what a run looks like after the keychain
         # refused to store one. Rather than stop here forever, register again
