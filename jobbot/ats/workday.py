@@ -311,6 +311,13 @@ async def start_application(page: Any) -> bool:
 
 
 async def needs_account(page: Any) -> bool:
+    # Guest apply (Adobe "Apply Manually"): the My Information form is already on screen; the header's "Sign In"
+    # button does not make it a sign-in gate.
+    with contextlib.suppress(Exception):
+        if await page.locator("[data-automation-id='applyFlowMyInfoPage'], [data-automation-id='applyFlowPage'] "
+                              "[data-automation-id^='formField-legalName']").first.is_visible(timeout=1500) and \
+                not await page.locator(f"{A['password']}, {A['signin_submit']}, {A['email']}").count():
+            return False
     for sel in (A["create_account_link"], A["signin_submit"], A["email"],
                 "text=/create account/i", "text=/sign in/i"):
         try:
