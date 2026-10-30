@@ -248,18 +248,44 @@ async def _reset_password(page: Any, tenant: str, email: str) -> str:
     new generated password, save it to the vault. Returns the new password, or "" if any step fails."""
     from jobbot.mail.gmail import wait_for_link
     back = page.url
-    if not await _click_first(page, ["[data-automation-id='forgotPasswordLink']", "button:has-text('Forgot your password')",
-                                     "a:has-text('Forgot your password')"], timeout=4000):
-        log.info("workday.reset_no_link", tenant=tenant)
-        return ""
+    # Two "Forgot your password?" buttons (one in the hidden create-account panel, Salesforce): the visible one.
+    # ... and when the sign-in is a pop-up over the create-account page, the one inside the pop-up.
+    link = page.locator("[data-automation-id='popUpDialog'] [data-automation-id='forgotPasswordLink']:visible")
+    if not await link.count():
+        link = page.locator("[data-automation-id='forgotPasswordLink']:visible, button:has-text('Forgot your password'):visible, "
+                            "a:has-text('Forgot your password'):visible")
+    link = link.first
+    try:
+        await link.click(timeout=5000)
+    except Exception:  # noqa: BLE001
+        try:
+            await link.evaluate("b => b.click()")
+        except Exception:  # noqa: BLE001
+            log.info("workday.reset_no_link", tenant=tenant)
+            return ""
     await cap.settle(page, quiet_ms=800)
     try:
         await _fill_when_ready(page, A["email"], email)
     except Exception:  # noqa: BLE001
         return ""
     sent = time.time() - 10
-    await _click_first(page, ["[data-automation-id='resetPasswordSubmitButton']", "button:has-text('Reset Password')",
-                              "button:has-text('Submit')", "[data-automation-id='click_filter']"], timeout=4000)
+    with contextlib.suppress(Exception):
+        log.info("workday.reset_form", ids=await page.evaluate(
+            "() => [...document.querySelectorAll('[data-automation-id]')].filter(e => e.getClientRects().length)"
+            ".map(e => e.getAttribute('data-automation-id') + ':' + (e.innerText || '').slice(0, 20)).slice(-25)"))
+        await page.screenshot(path="/tmp/workday_reset.png")
+    # The visible submit of the reset dialog (Workday puts a 'click_filter' overlay over its buttons).
+    for sel in ("[data-automation-id='resetPasswordSubmitButton']:visible", "button:has-text('Reset Password'):visible",
+                "[role=dialog] [data-automation-id='click_filter']:visible", "button:has-text('Submit'):visible",
+                "[data-automation-id='click_filter'][aria-label*='Reset' i]"):
+        btn = page.locator(sel).first
+        if await btn.count():
+            try:
+                await btn.click(timeout=4000)
+            except Exception:  # noqa: BLE001
+                await btn.evaluate("b => b.click()")
+            log.info("workday.reset_submitted", selector=sel)
+            break
     link = await asyncio.to_thread(wait_for_link, from_contains="workday", newer_than_ts=sent, timeout_s=200,
                                    link_re=r"reset|password|token|passwordreset")
     if not link:
@@ -358,13 +384,26 @@ async def ensure_account(
                 ok, err = await _sign_in(page, existing.username, new_pw)
                 if ok:
                     return AccountResult(created=False, signed_in=True, username=existing.username)
+            else:
+                # No reset email at all: Workday sends none for an address without an account. The saved password
+                # came from a creation that never finished (Salesforce): create the account now. If it does exist,
+                # creation fails with "already exists" and goes to the owner below.
+                log.info("workday.no_account_behind_saved_password", tenant=tenant)
+                with contextlib.suppress(Exception):
+                    await page.keyboard.press("Escape")
+                    await _click_first(page, [A["create_account_link"], "button:has-text('Create Account')",
+                                              "a:has-text('Create Account')"], timeout=4000)
+                    await cap.settle(page, quiet_ms=800)
+                existing = None
         # The account exists on the employer's site and the password we hold
         # does not open it -- which is what a run looks like after the keychain
         # refused to store one. Rather than stop here forever, register again
         # under a plus-address of the same inbox: same person, same mail, an
         # address the candidate controls and can be replied to.
-        alias = _plus_address(email, tenant)
-        if alias != existing.username:
+        alias = _plus_address(email, tenant) if existing else email
+        if not existing:
+            pass                                          # fall through to "create one" below
+        elif alias != existing.username:
             log.warning("workday.locked_out_registering_again", tenant=tenant,
                         was=existing.username, now=alias, error=err[:100])
             email = alias
